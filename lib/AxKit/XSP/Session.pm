@@ -1,15 +1,15 @@
-# Axkit::XSP::Sessions - Cocoon style session management
-package AxKit::XSP::Sessions;
+# Axkit::XSP::Session - Cocoon style session management
+package AxKit::XSP::Session;
 use strict;
 use Apache::AxKit::Language::XSP::SimpleTaglib;
 use Apache::AxKit::Plugin::Session;
-$AxKit::XSP::Sessions::VERSION = 0.90;
-$AxKit::XSP::Sessions::NS = 'http://www.apache.org/1999/XSP/Session';
+$AxKit::XSP::Session::VERSION = 0.90;
+$AxKit::XSP::Session::NS = 'http://www.apache.org/1999/XSP/Session';
 
 sub start_document {
 	# help! somebody just tell me that always using Apache->request->pnotes("SESSION")
 	# directly is as fast as using $session and I will remove this nightmare
-	return 'use Apache::AxKit::Plugins::Session;'."\n".
+	return 'use Apache::AxKit::Plugin::Session;'."\n".
 		'use Time::Piece;'."\n".
 		'# Evil hack to globally prepare a session object. Actually, it is quite waterproof...'."\n".
 		'my $session;'."\n".
@@ -17,7 +17,7 @@ sub start_document {
 		'*handler = sub { $session = Apache->request->pnotes("SESSION"); goto $handler; }; }'."\n\n";
 }
 
-package AxKit::XSP::Sessions::Handlers;
+package AxKit::XSP::Session::Handlers;
 
 sub get_attribute : attribOrChild(name) exprOrNode(attribute) nodeAttr(name,$attr_name)
 {
@@ -98,7 +98,7 @@ __END__
 
 =head1 NAME
 
-AxKit::XSP::Sessions - Session tag library for AxKit eXtensible Server Pages.
+AxKit::XSP::Session - Session tag library for AxKit eXtensible Server Pages.
 
 =head1 SYNOPSIS
 
@@ -112,7 +112,7 @@ Add the session: namespace to your XSP C<<xsp:page>> tag:
 
 Add this taglib to AxKit (via httpd.conf or .htaccess):
 
-    AxAddXSPTaglib AxKit::XSP::Sessions
+    AxAddXSPTaglib AxKit::XSP::Session
 
 =head1 DESCRIPTION
 
@@ -120,7 +120,7 @@ The XSP session taglib provides basic session object operations to
 XSP using the Cocoon2 Session taglib specification.  Except for very
 minor differences, it behaves fully compatible to the original implementation.
 
-This taglib works in conjunction with Apache::AxKit::Plugins::Session,
+This taglib works in conjunction with Apache::AxKit::Plugin::Session,
 which does all the hard work. There are several configuration variants
 available, see the man page for details.
 
@@ -196,7 +196,7 @@ lies within the last 5 seconds.
 Gets the minimum time, in seconds, that the server will maintain this session between
 client requests. Remember, though, that a new session gets a default value settable
 in your httpd.conf (default 30 minutes), so usually you would change this in
-special cases only. Moreover, due to the implementation of Apache::AxKit::Plugins::Session,
+special cases only. Moreover, due to the implementation of Apache::AxKit::Plugin::Session,
 the session may remain valid up to 5 minutes longer than this value, which in turn gets
 rounded down to a multiple of 5 minutes (300 seconds).
 
@@ -205,7 +205,7 @@ rounded down to a multiple of 5 minutes (300 seconds).
 The Cocoon2 taglib allows you to automatically create sessions on demand by putting
 'create-session="true"' in the <xsp:page> tag. Unfortunately, AxKit XSP doesn't
 support this attribute. You can make this behaviour default, though;
-use the configuration facilities of Apache::AxKit::Plugins::Session to do that.
+use the configuration facilities of Apache::AxKit::Plugin::Session to do that.
 
 =head1 EXAMPLE
 
@@ -239,7 +239,7 @@ modify it under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-AxKit, Apache::Session, Apache::AxKit::Plugins::Session, AxKit::XSP::Auth, AxKit::XSP::Globals,
+AxKit, Apache::Session, Apache::AxKit::Plugin::Session, AxKit::XSP::Auth, AxKit::XSP::Global,
 Cocoon2 Session Logicsheet L<http://xml.apache.org/cocoon2/userdocs/xsp/session.html>
 
 =cut

@@ -9,7 +9,7 @@ $AxKit::XSP::Global::NS = 'http://www.creITve.de/2002/XSP/Global';
 sub start_document {
 	# help! somebody just tell me that always using Apache->request->pnotes("GLOBAL")
 	# directly is as fast as using $global and I will remove this nightmare
-	return 'use Apache::AxKit::Plugins::Session;'."\n".
+	return 'use Apache::AxKit::Plugin::Session;'."\n".
 		'use Time::Piece;'."\n".
 		'# Evil hack to globally prepare a session object. Actually, it is quite waterproof...'."\n".
 		'my $global;'."\n".
@@ -85,7 +85,7 @@ persistent data which belongs into some kind of tatabase. Example uses:
 tracking of logged in users (The Auth taglib does that), accumulating daily
 statistics, changing global application state for limited time.
 
-This taglib works in conjunction with Apache::AxKit::Plugins::Session,
+This taglib works in conjunction with Apache::AxKit::Plugin::Session,
 which does all the hard work. There are several configuration variants
 available, see the man page for details.
 
@@ -147,7 +147,7 @@ modify it under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-AxKit, Apache::Session, Apache::AxKit::Plugins::Session, AxKit::XSP::Auth, AxKit::XSP::Session,
+AxKit, Apache::Session, Apache::AxKit::Plugin::Session, AxKit::XSP::Auth, AxKit::XSP::Session,
 Cocoon2 Session Logicsheet L<http://xml.apache.org/cocoon2/userdocs/xsp/session.html>
 
 =cut

@@ -147,6 +147,7 @@ if (defined $attr_destination) {
 } else {
 	$rc = $auth_type->login($r);
 }
+$rc = $auth_type->external_redirect($attr_destination||$r->uri) if $rc == OK;
 my $old_id = $$global{'auth_online_users'}{$$session{'auth_access_user'}};
 if ($old_id && $old_id ne $$session{'_session_id'}) {
 	my $oldsession = $auth_type->_get_session_from_store($r,$old_id);
@@ -189,7 +190,7 @@ sub deny_permission : attribOrChild(reason) childStruct($text(lang))
 
 sub has_permission : attribOrChild(target) expr
 {
-	return 'Apache::AxKit::Plugins::Session::has_permission($r,$attr_target)?1:0';
+	return 'Apache::AxKit::Plugin::Session::has_permission($r,$attr_target)?1:0';
 }
 
 sub is_logged_in : expr
@@ -325,7 +326,7 @@ allows you to view, check and modify access permissions for users (logging
 in and out) and the effective permissions of an object (file, directory or
 subtarget). Moreover, it provides utilities for password handling.
 
-This taglib works in conjunction with Apache::AxKit::Plugins::Session,
+This taglib works in conjunction with Apache::AxKit::Plugin::Session,
 which does all the hard work. There are several configuration variants
 available, see the man page for details.
 
@@ -355,7 +356,7 @@ but let the admin see the recorded ip addresses. Subtargets are referenced as
 
 =head2 Storing permissions
 
-The default implementation (see Apache::AxKit::Plugins::Session) uses the Apache
+The default implementation (see Apache::AxKit::Plugin::Session) uses the Apache
 configuration directive 'require' to store permissions. This unfortunately means
 that modifying permissions is usually impossible and unusually dangerous. You have
 to subclass the default implementation in order to store them somewhere else.
@@ -501,6 +502,6 @@ modify it under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-AxKit, Apache::Session, Apache::AxKit::Plugins::Session, AxKit::XSP::Auth, AxKit::XSP::Globals
+AxKit, Apache::Session, Apache::AxKit::Plugin::Session, AxKit::XSP::Session, AxKit::XSP::Global
 
 =cut
