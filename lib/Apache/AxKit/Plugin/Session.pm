@@ -7,7 +7,7 @@ BEGIN {
     use Apache::Table;
     use Apache::Session::File;
     use Apache::Constants qw(:common :response);
-    our $VERSION = 0.98;
+    our $VERSION = 0.99;
 }
 
 #######################################################
