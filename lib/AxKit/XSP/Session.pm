@@ -3,93 +3,91 @@ package AxKit::XSP::Session;
 use strict;
 use Apache::AxKit::Language::XSP::SimpleTaglib;
 use Apache::AxKit::Plugin::Session;
-$AxKit::XSP::Session::VERSION = 0.90;
-$AxKit::XSP::Session::NS = 'http://www.apache.org/1999/XSP/Session';
+our $VERSION = 0.98;
+our $NS = 'http://www.apache.org/1999/XSP/Session';
 
 sub start_document {
-	# help! somebody just tell me that always using Apache->request->pnotes("SESSION")
-	# directly is as fast as using $session and I will remove this nightmare
-	return 'use Apache::AxKit::Plugin::Session;'."\n".
-		'use Time::Piece;'."\n".
-		'# Evil hack to globally prepare a session object. Actually, it is quite waterproof...'."\n".
-		'my $session;'."\n".
-		'{ my $handler = \&xml_generator;'."\n".
-		'*xml_generator = sub { $session = Apache->request->pnotes("SESSION"); goto $handler; }; }'."\n\n";
+        return 'use Apache::AxKit::Plugin::Session;'."\n".
+               'use Time::Piece;'."\n";
+}
+
+sub start_xml_generator {
+        return 'my $session = Apache->request->pnotes("SESSION");'."\n\n";
 }
 
 package AxKit::XSP::Session::Handlers;
 
-sub get_attribute : attribOrChild(name) exprOrNode(attribute) nodeAttr(name,$attr_name)
+sub get_attribute : XSP_attribOrChild(name) XSP_exprOrNode(attribute) XSP_nodeAttr(name,$attr_name)
 {
-	return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$session{$attr_name};';
+        return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$session{$attr_name};';
 }
 *get_value = \&get_attribute;
 
-sub get_attribute_names : exprOrNodelist(name)
+sub get_attribute_names : XSP_exprOrNodelist(name)
 {
-	return 'map { m/^(?:_|auth_)/?():substr($_,0,1) eq "X"?substr($_,1):$_ } keys %$session';
+        return 'map { m/^(?:_|auth_)/?():substr($_,0,1) eq "X"?substr($_,1):$_ } keys %$session';
 }
 *get_value_names = \&get_attribute_names;
 
-sub get_creation_time : attrib(as) exprOrNode(creation-time)
+sub get_creation_time : XSP_attrib(as) XSP_exprOrNode(creation-time)
 {
-	my ($e, $tag, %attribs) = @_;
-	if ($attribs{'as'} eq 'string') {
-		return 'localtime($$session{"auth_first_access"})->strftime("%a %b %d %H:%M:%S %Z %Y");';
-	} else {
-		return '$$session{"auth_first_access"};';
-	}
+        my ($e, $tag, %attribs) = @_;
+        if ($attribs{'as'} eq 'string') {
+                return 'localtime($$session{"auth_first_access"})->strftime("%a %b %d %H:%M:%S %Z %Y");';
+        } else {
+                return '$$session{"auth_first_access"};';
+        }
 }
 
-sub get_id : exprOrNode(id)
+sub get_id : XSP_exprOrNode(id)
 {
-	return '$$session{"_session_id"};';
+        return '$$session{"_session_id"};';
 }
 
 # this sub works slightly incorrect - auth_last_access has a 5 minute resolution
 # (for performance reasons: writing session file less often)
-sub get_last_accessed_time : attrib(as) exprOrNode(last-accessed-time)
+sub get_last_accessed_time : XSP_attrib(as) XSP_exprOrNode(last-accessed-time)
 {
-	my ($e, $tag, %attribs) = @_;
-	if ($attribs{'as'} eq 'string') {
-		return 'localtime($$session{"auth_last_access"}*300)->strftime("%a %b %d %H:%M:%S %Z %Y");';
-	} else {
-		return '$$session{"auth_last_access"}*300;';
-	}
+        my ($e, $tag, %attribs) = @_;
+        if ($attribs{'as'} eq 'string') {
+                return 'localtime($$session{"auth_last_access"}*300)->strftime("%a %b %d %H:%M:%S %Z %Y");';
+        } else {
+                return '$$session{"auth_last_access"}*300;';
+        }
 }
 
-sub get_max_inactive_interval : exprOrNode(max-inactive-interval)
+sub get_max_inactive_interval : XSP_exprOrNode(max-inactive-interval)
 {
-	return '$$session{"auth_expire"}*300;';
+        return '$$session{"auth_expire"}*300;';
 }
 
 sub invalidate
 {
-	return '%$session = ("_session_id" => $$session{"_session_id"}); tied(%$session)->delete;';
+        return '%$session = ("_session_id" => $$session{"_session_id"}); tied(%$session)->delete;';
 }
 
 # FIXME: this sub works unreliable - it only checks if session got created
 # during the last 5 seconds
-sub is_new : exprOrNode(new)
+sub is_new : XSP_exprOrNode(new)
 {
-	return '$$session{"auth_first_access"} > time()+5;';
+        return '$$session{"auth_first_access"} > time()+5;';
 }
 
-sub remove_attribute : attribOrChild(name)
+sub remove_attribute : XSP_attribOrChild(name)
 {
-	return '$attr_name =~ s/^(_|auth_|X)/X\1/; delete $$session{$attr_name};';
+        return '$attr_name =~ s/^(_|auth_|X)/X\1/; delete $$session{$attr_name};';
 }
 *remove_value = \&remove_attribute;
 
-sub set_attribute : attribOrChild(name) captureContent
+sub set_attribute : XSP_attribOrChild(name) XSP_captureContent
 {
-	return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$session{$attr_name} = $_;';
+        return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$session{$attr_name} = $_;';
 }
 *put_value = \&set_attribute;
 
-sub set_max_inactive_interval : attribOrChild(interval)
+sub set_max_inactive_interval : XSP_attribOrChild(interval)
 {
-	return '$$session{"auth_expire"} = $interval/300;';
+        return '$$session{"auth_expire"} = $interval/300;';
 }
 
 1;

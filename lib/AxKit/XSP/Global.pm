@@ -3,53 +3,51 @@ package AxKit::XSP::Global;
 use strict;
 use Apache::AxKit::Language::XSP::SimpleTaglib;
 use Apache::AxKit::Plugin::Session;
-$AxKit::XSP::Global::VERSION = 0.90;
-$AxKit::XSP::Global::NS = 'http://www.creITve.de/2002/XSP/Global';
+our $VERSION = 0.98;
+our $NS = 'http://www.creITve.de/2002/XSP/Global';
 
 sub start_document {
-	# help! somebody just tell me that always using Apache->request->pnotes("GLOBAL")
-	# directly is as fast as using $global and I will remove this nightmare
-	return 'use Apache::AxKit::Plugin::Session;'."\n".
-		'use Time::Piece;'."\n".
-		'# Evil hack to globally prepare a session object. Actually, it is quite waterproof...'."\n".
-		'my $global;'."\n".
-		'{ my $handler = \&xml_generator;'."\n".
-		'*xml_generator = sub { $global = Apache->request->pnotes("GLOBAL"); goto $handler; }; }'."\n\n";
+        return 'use Apache::AxKit::Plugin::Session;'."\n".
+               'use Time::Piece;'."\n";
+}
+
+sub start_xml_generator {
+        return 'my $global = Apache->request->pnotes("GLOBAL");'."\n\n";
 }
 
 package AxKit::XSP::Global::Handlers;
 
-sub get_attribute : attribOrChild(name) exprOrNode(attribute) nodeAttr(name,$attr_name)
+sub get_attribute : XSP_attribOrChild(name) XSP_exprOrNode(attribute) XSP_nodeAttr(name,$attr_name)
 {
-	return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$global{$attr_name};';
+        return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$global{$attr_name};';
 }
 *get_value = \&get_attribute;
 
-sub get_attribute_names : exprOrNodelist(name)
+sub get_attribute_names : XSP_exprOrNodelist(name)
 {
-	return 'map { m/^(?:_|auth_)/?():substr($_,0,1) eq "X"?substr($_,1):$_ } keys %$global';
+        return 'map { m/^(?:_|auth_)/?():substr($_,0,1) eq "X"?substr($_,1):$_ } keys %$global';
 }
 *get_value_names = \&get_attribute_names;
 
-sub get_creation_time : attrib(as) exprOrNode(creation-time)
+sub get_creation_time : XSP_attrib(as) XSP_exprOrNode(creation-time)
 {
-	my ($e, $tag, %attribs) = @_;
-	if ($attribs{'as'} eq 'string') {
-		return 'localtime($$global{"_creation_time"})->strftime("%a %b %d %H:%M:%S %Z %Y");';
-	} else {
-		return '$$global{"_creation_time"};';
-	}
+        my ($e, $tag, %attribs) = @_;
+        if ($attribs{'as'} eq 'string') {
+                return 'localtime($$global{"_creation_time"})->strftime("%a %b %d %H:%M:%S %Z %Y");';
+        } else {
+                return '$$global{"_creation_time"};';
+        }
 }
 
-sub remove_attribute : attribOrChild(name)
+sub remove_attribute : XSP_attribOrChild(name)
 {
-	return '$attr_name =~ s/^(_|auth_|X)/X\1/; delete $$global{$attr_name};';
+        return '$attr_name =~ s/^(_|auth_|X)/X\1/; delete $$global{$attr_name};';
 }
 *remove_value = \&remove_attribute;
 
-sub set_attribute : attribOrChild(name) captureContent
+sub set_attribute : XSP_attribOrChild(name) XSP_captureContent
 {
-	return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$global{$attr_name} = $_;';
+        return '$attr_name =~ s/^(_|auth_|X)/X\1/; $$global{$attr_name} = $_;';
 }
 *put_value = \&set_attribute;
 

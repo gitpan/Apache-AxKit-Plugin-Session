@@ -3,7 +3,6 @@ use ExtUtils::MakeMaker;
 # the contents of the Makefile that is written.
 BEGIN { require 5.006; }
 use Apache::AxKit::Language::XSP::SimpleTaglib;
-use Apache::RequestNotes;
 use Apache::Session;
 
 WriteMakefile(
@@ -13,7 +12,6 @@ WriteMakefile(
     'VERSION_FROM'  => 'lib/Apache/AxKit/Plugin/Session.pm', # finds $VERSION
     'PREREQ_PM'     => {
     	AxKit => "1.6", # FIXME: not entirely true, but 1.6.1 is not yet released
-    	Apache::RequestNotes => 0,
     	Apache::Session => 0,
     },
     'dist' => {

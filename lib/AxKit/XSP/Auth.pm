@@ -4,8 +4,8 @@ use strict;
 use Apache::AxKit::Language::XSP::SimpleTaglib;
 use Apache::AxKit::Plugin::Session;
 use Crypt::GeneratePassword;
-$AxKit::XSP::Auth::VERSION = 0.90;
-$AxKit::XSP::Auth::NS = 'http://www.creITve.de/2002/XSP/Auth';
+our $VERSION = 0.98;
+our $NS = 'http://www.creITve.de/2002/XSP/Auth';
 
 my @chars = ('.', '/', 0..9, 'A'..'Z', 'a'..'z');
 sub makeSalt {
@@ -58,7 +58,7 @@ sub struct2perm {
 package AxKit::XSP::Auth::Handlers;
 
 
-sub get_single_access : expr attribOrChild(type)
+sub get_single_access : XSP_expr XSP_attribOrChild(type)
 {
 	return << 'EOC';
 my @vals;
@@ -71,7 +71,7 @@ if (!ref($$session{"auth_access_".$attr_type})) {
 EOC
 }
 
-sub get_access : struct attribOrChild(type)
+sub get_access : XSP_struct XSP_attribOrChild(type)
 {
 	return << 'EOC';
 my $res = {"access" => []};
@@ -96,7 +96,29 @@ $res;
 EOC
 }
 
-sub set_access : childStruct(@access{$type *value})
+sub has_access : XSP_expr XSP_attribOrChild(type,value)
+{
+	return << 'EOC';
+my $res = 0;
+my @types;
+if (!defined $attr_type) {
+	@types = map { substr($_,12) } grep { substr($_,0,12) eq 'auth_access_' } keys %$session;
+} else {
+	@types = ($attr_type);
+}
+foreach my $type (@types) {
+	my @vals;
+	if (!ref($$session{"auth_access_".$type})) {
+		$res = 1, last if ($$session{"auth_access_".$type} eq $attr_value);
+	} else {
+		$res = 1, last if (exists $$session{"auth_access_".$type}->{$attr_value});
+	}
+}
+$res;
+EOC
+}
+
+sub set_access : XSP_childStruct(@access{$type *value})
 {
 	return << 'EOC'.add_access(@_);
 foreach my $key (keys %{$session}) {
@@ -105,7 +127,7 @@ foreach my $key (keys %{$session}) {
 EOC
 }
 
-sub add_access : childStruct(@access{$type *value})
+sub add_access : XSP_childStruct(@access{$type *value})
 {
 	return << 'EOC';
 foreach my $perm (@{$_{"access"}}) {
@@ -120,7 +142,7 @@ foreach my $perm (@{$_{"access"}}) {
 EOC
 }
 
-sub rem_access : childStruct(@access{$type *value})
+sub rem_access : XSP_childStruct(@access{$type *value})
 {
 	return << 'EOC';
 foreach my $perm (@{$_{"access"}}) {
@@ -136,19 +158,23 @@ foreach my $perm (@{$_{"access"}}) {
 EOC
 }
 
-sub login : attribOrChild(destination) childStruct(@access{$type *value})
+sub login : XSP_attribOrChild(destination) XSP_childStruct(@access{$type *value})
 {
-	return set_access(@_).<< 'EOC';
-my $auth_type = $r->auth_type;
+        my $res = << 'EOC';
+my $auth_type = $r->auth_type || "Apache::AxKit::Plugin::Session";
 no strict 'refs';
-$r->pnotes('INPUT')->{'credential_0'} = $$session{'auth_access_user'};
+Apache::Request->instance($r)->param('credential_0',$$session{'auth_access_user'});
 my $rc;
 if (defined $attr_destination) {
 	$rc = $auth_type->login($r,$attr_destination);
 } else {
 	$rc = $auth_type->login($r);
 }
-$rc = $auth_type->external_redirect($attr_destination||$r->uri) if $rc == OK;
+$session = $r->pnotes('SESSION');
+EOC
+        $res .= set_access(@_);
+        return $res.<<'EOC';
+$rc = $auth_type->external_redirect($attr_destination||$r->uri) if $rc == OK && $attr_destination ne 'none';
 my $old_id = $$global{'auth_online_users'}{$$session{'auth_access_user'}};
 if ($old_id && $old_id ne $$session{'_session_id'}) {
 	my $oldsession = $auth_type->_get_session_from_store($r,$old_id);
@@ -159,14 +185,16 @@ if ($old_id && $old_id ne $$session{'_session_id'}) {
 }
 $$global{'auth_online_users'}{$$session{'auth_access_user'}} = $$session{'_session_id'};
 $$global{'auth_logins'}++;
-throw Apache::AxKit::Exception::Retval(return_code => $rc);
+untie %$session;
+untie %$global;
+throw Apache::AxKit::Exception::Retval(return_code => $rc) unless $attr_destination eq 'none';
 EOC
 }
 
-sub logout : attribOrChild(destination)
+sub logout : XSP_attribOrChild(destination)
 {
 	return set_access(@_).<< 'EOC';
-my $auth_type = $r->auth_type;
+my $auth_type = $r->auth_type || 'Apache::AxKit::Plugin::Session';
 no strict 'refs';
 my $rc;
 delete $$global{'auth_online_users'}{$$session{'auth_access_user'}};
@@ -179,33 +207,33 @@ throw Apache::AxKit::Exception::Retval(return_code => $rc);
 EOC
 }
 
-sub check_permission : attribOrChild(target,reason) childStruct($text(lang))
+sub check_permission : XSP_attribOrChild(target,reason) XSP_childStruct($text(lang))
 {
 	return 'if (do {'.has_permission(@_).'}) { '.deny_permission(@_).' }';
 }
 
-sub deny_permission : attribOrChild(reason) childStruct($text(lang))
+sub deny_permission : XSP_attribOrChild(reason) XSP_childStruct($text(lang))
 {
 	return '$$session{"auth_reason"} = $attr_reason || "permission_denied"; $$session{"auth_reason_desc"} = $_{"text"}; throw Apache::AxKit::Exception::Retval(return_code => Apache::Constants::FORBIDDEN); ';
 }
 
-sub has_permission : attribOrChild(target) expr
+sub has_permission : XSP_attribOrChild(target) XSP_expr
 {
 	return 'Apache::AxKit::Plugin::Session::has_permission($r,$attr_target)?1:0';
 }
 
-sub is_logged_in : expr
+sub is_logged_in : XSP_expr
 {
 	return '$$session{"auth_access_user"} ne "guest"?1:0';
 }
 
-sub get_permission : attribOrChild(target) struct
+sub get_permission : XSP_attribOrChild(target) XSP_struct
 {
 	return << 'EOC';
 $attr_target = URI->new_abs($attr_target, $r->uri);
 if (my $subr = $r->lookup_uri($attr_target)) {
 	$subr->pnotes('SESSION',$session);
-	my $type = $subr->auth_type;
+	my $type = $subr->auth_type || 'Apache::AxKit::Plugin::Session';
 	{ "permission" => [ map { AxKit::XSP::Auth::perm2struct($_) } ($type->get_permission_set($subr)) ] };
 } else {
 	{ }
@@ -213,35 +241,35 @@ if (my $subr = $r->lookup_uri($attr_target)) {
 EOC
 }
 
-sub set_permission : attribOrChild(target) childStruct(@permission{$type *value &permission})
+sub set_permission : XSP_attribOrChild(target) XSP_childStruct(@permission{$type *value &permission})
 {
 	return << 'EOC';
 $attr_target = URI->new_abs($attr_target, $r->uri);
 my $subr = $r->lookup_uri($attr_target);
 $subr->pnotes('SESSION',$session);
-my $type = $subr->auth_type;
+my $type = $subr->auth_type || 'Apache::AxKit::Plugin::Session';
 $type->set_permission_set($subr,map { AxKit::XSP::Auth::struct2perm($_) } @{$_{'permission'} || []});
 EOC
 }
 
-sub add_permission : attribOrChild(target) childStruct(@permission{$type *value &permission})
+sub add_permission : XSP_attribOrChild(target) XSP_childStruct(@permission{$type *value &permission})
 {
 	return << 'EOC';
 $attr_target = URI->new_abs($attr_target, $r->uri);
 my $subr = $r->lookup_uri($attr_target);
 $subr->pnotes('SESSION',$session);
-my $type = $subr->auth_type;
+my $type = $subr->auth_type || 'Apache::AxKit::Plugin::Session';
 $type->set_permission_set($subr,@{($type->get_permission_set($subr)) || []},map { AxKit::XSP::Auth::struct2perm($_) } @{$_{'permission'} || []});
 EOC
 }
 
-sub rem_permission : attribOrChild(target) childStruct(@permission{$type *value &permission})
+sub rem_permission : XSP_attribOrChild(target) XSP_childStruct(@permission{$type *value &permission})
 {
 	return << 'EOC';
 $attr_target = URI->new_abs($attr_target, $r->uri);
 my $subr = $r->lookup_uri($attr_target);
 $subr->pnotes('SESSION',$session);
-my $type = $subr->auth_type;
+my $type = $subr->auth_type || 'Apache::AxKit::Plugin::Session';
 my @set = @{($type->get_permission_set($subr)) || []};
 foreach my $perm (@{$_{'permission'} || []}) {
 	@set = grep { !perm_equals($_,AxKit::XSP::Auth::struct2perm($perm)) } @set;
@@ -250,43 +278,43 @@ $type->set_permission_set($subr,@set);
 EOC
 }
 
-sub random_password : expr attribOrChild(lang,signs,numbers,minlen,maxlen)
+sub random_password : XSP_expr XSP_attribOrChild(lang,signs,numbers,minlen,maxlen)
 {
 	return 'Crypt::GeneratePassword::word(int($attr_minlen)||7,int($attr_maxlen)||7,$attr_lang,int($attr_signs),(defined $attr_numbers?int($attr_numbers):2))';
 }
 
 # This may not work on win32 nor with crypt() implementations without
 # MD5 support. Considered experimental for that reason.
-sub encrypt_password : captureContent expr
+sub encrypt_password : XSP_captureContent XSP_expr
 {
 	return 'crypt($_,AxKit::XSP::Auth::makeSalt())';
 }
 
-sub password_matches : attribOrChild(clear,encrypted) expr
+sub password_matches : XSP_attribOrChild(clear,encrypted) XSP_expr
 {
 	return << 'EOF';
 ($attr_clear && $attr_encrypted && crypt($attr_clear,$attr_encrypted) eq $attr_encrypted?1:0);
 EOF
 }
 
-sub get_reason : expr
+sub get_reason : XSP_expr
 {
-	return 'my $auth_type = $r->auth_type; no strict "refs"; $auth_type->get_reason();';
+	return 'my $auth_type = $r->auth_type || "Apache::AxKit::Plugin::Session"; no strict "refs"; $auth_type->get_reason();';
 }
 
-sub get_location : expr
+sub get_location : XSP_expr
 {
-	return 'my $auth_type = $r->auth_type; no strict "refs"; $auth_type->get_location();';
+	return 'my $auth_type = $r->auth_type || "Apache::AxKit::Plugin::Session"; no strict "refs"; $auth_type->get_location();';
 }
 
 sub clear_reason
 {
-	return 'my $auth_type = $r->auth_type; no strict "refs"; $auth_type->save_reason();';
+	return 'my $auth_type = $r->auth_type || "Apache::AxKit::Plugin::Session"; no strict "refs"; $auth_type->save_reason();';
 }
 
-sub set_reason : captureContent
+sub set_reason : XSP_captureContent
 {
-	return 'my $auth_type = $r->auth_type; no strict "refs"; $auth_type->save_reason((length($_)?($_):()));';
+	return 'my $auth_type = $r->auth_type || "Apache::AxKit::Plugin::Session"; no strict "refs"; $auth_type->save_reason((length($_)?($_):()));';
 }
 
 1;
@@ -388,13 +416,19 @@ This tag removes entries from the users access set. It takes input like set-acce
 If you leave out the value, any access of that type is removed, else only exact matches
 are revoked.
 
+=head3 C<<auth:has-access>>
+
+Takes attributes/children 'type' and 'value'. Returns true if the user currently
+has access privilege type 'type' equal to / containing 'value'.
+
 =head3 C<<login>>
 
 This tag logs in a user name. It works just like set-access, but additionally the
 user name is checked and any existing session of that user is invalidated, so that
 users can be logged in only once. Moreover, an external redirect is triggered.
 You can provide a 'destination' attribute or child tag to set the destination location,
-otherwise, the HTTP request parameter 'destination' is used.
+otherwise, the HTTP request parameter 'destination' is used. If you set 'destination'
+to "none", no redirect is performed.
 
 =head3 C<<logout>>
 

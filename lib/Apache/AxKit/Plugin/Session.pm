@@ -7,7 +7,7 @@ BEGIN {
     use Apache::Table;
     use Apache::Session::File;
     use Apache::Constants qw(:common :response);
-    $Apache::AxKit::Plugin::Session::VERSION = 0.93;
+    our $VERSION = 0.98;
 }
 
 #######################################################
@@ -18,7 +18,6 @@ use mod_perl qw(1.24 StackedHandlers MethodHandlers Authen Authz);
 use Apache::Constants qw(:common M_GET REDIRECT MOVED);
 use Apache::URI ();
 use Apache::Cookie;
-use Apache::RequestNotes;
 use URI::Escape;
 use URI;
 
@@ -29,19 +28,20 @@ sub orig_save_reason ($;$) {
     my ($self, $error_message) = @_;
     $self->debug(3,"======= save_reason(".join(',',@_).")");
     my $r = Apache->request();
-    my ($auth_name, $auth_type) = ($r->auth_name, $r->auth_type);
+    my $auth_name = $r->auth_name || 'AxKitSession';
+    my $auth_type = $r->auth_type || __PACKAGE__;
     # Pass a cookie with the error reason that can be read after the redirect.
     # Use a cookie with no time limit
     if (@_ <= 1) {
         # delete error message cookie if it exists
         if ( exists $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'} ) {
-	    $self->send_cookie(value=>'', name=>'Reason', expires=>'-1d');
-	    delete $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'};
-	}
+            $self->send_cookie(value=>'', name=>'Reason', expires=>'-1d');
+            delete $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'};
+        }
     } elsif ($error_message) {
         # set error message cookie if error message exists
         $self->send_cookie(name=>'Reason', value=>$error_message);
-	$r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'} = $error_message;
+        $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'} = $error_message;
     }
 }
 # ____ End of save_reason ____
@@ -54,7 +54,8 @@ sub orig_get_reason($) {
     my ($self) = @_;
     $self->debug(3,"======= orig_get_reason(".join(',',@_).")");
     my $r = Apache->request();
-    my ($auth_name, $auth_type) = ($r->auth_name, $r->auth_type);
+    my $auth_name = $r->auth_name || 'AxKitSession';
+    my $auth_type = $r->auth_type || __PACKAGE__;
 
     parse_input();
     return $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'};
@@ -70,7 +71,7 @@ sub orig_save_params ($$) {
     $self->debug(3,"======= save_params(".join(',',@_).")");
     my $r = Apache->request();
 
-    parse_input();
+    parse_input(1);
     $uri = new URI($uri);
     $uri->query_form(%{$r->pnotes('INPUT')});
     return $uri->as_string;
@@ -99,7 +100,7 @@ sub login_form ($) {
     my ($self) = @_;
     $self->debug(3,"======= login_form(".join(',',@_).")");
     my $r = Apache->request();
-    my $auth_name = $r->auth_name;
+    my $auth_name = $r->auth_name || 'AxKitSession';
     my $authen_script;
     unless ($authen_script = $r->dir_config($auth_name.'LoginScript')) {
         $r->log_reason("PerlSetVar '${auth_name}LoginScript' missing", $r->uri);
@@ -124,7 +125,7 @@ sub debug ($$$) {
 #----------------
     my ($self, $level, $msg) = @_;
     my $r = Apache->request();
-    my $debug = $r->dir_config('AuthCookieURLDebug') || 0;
+    my $debug = $r->dir_config('AxDebugSession') || 0;
     $r->log_error($msg) if $debug >= $level;
 }
 # ____ End of debug ____
@@ -132,28 +133,47 @@ sub debug ($$$) {
 #================
 sub parse_input {
 #----------------
+    my ($full) = @_;
     my $or = my $r = Apache->request();
-    return if $r->pnotes('INPUT');
+
     while ($r->prev) {
         $r = $r->prev;
         $r = $r->main || $r;
     }
-    if ($r->pnotes('INPUT')) {
-	if ($r ne $or) {
-	    $or->pnotes('INPUT',$r->pnotes('INPUT'));
-	    $or->pnotes('UPLOADS',$r->pnotes('UPLOADS'));
-	    $or->pnotes('COOKIES',$r->pnotes('COOKIES'));
-        }
-	return;
+    if ($r->pnotes('INPUT') && $r ne $or) {
+            $or->pnotes('INPUT',$r->pnotes('INPUT'));
+            $or->pnotes('UPLOADS',$r->pnotes('UPLOADS'));
+            $or->pnotes('COOKIES',$r->pnotes('COOKIES'));
+            $or->pnotes('COOKIES',{}) unless $or->pnotes('COOKIES');
+	    return;
     }
-    Apache::RequestNotes::handler($r);
-    $r->pnotes('INPUT',{}) unless $r->pnotes('INPUT');
-    $r->pnotes('UPLOADS',[]) unless $r->pnotes('UPLOADS');
-    $r->pnotes('COOKIES',{}) unless $r->pnotes('COOKIES');
+
+    my %cookies;
+    my %cookiejar = Apache::Cookie->new($r)->parse;
+    foreach (sort keys %cookiejar) {
+        my $cookie = $cookiejar{$_};
+        $cookies{$cookie->name} = $cookie->value;
+    }
+    $or->pnotes('COOKIES',\%cookies);
+    $r->pnotes('COOKIES',$or->pnotes('COOKIES')) if ($r ne $or);
+
+    # avoid parsing the input so later modules can modify it
+    return if (!$full);
+    return if $r->pnotes('INPUT');
+
+    # from Apache::RequestNotes  
+    my $maxsize   = $r->dir_config('MaxPostSize') || 1024;
+    my $uploads   = $r->dir_config('DisableUploads') =~ m/Off/i ? 0 : 1;
+
+    my $apr = Apache::Request->instance($r,
+        POST_MAX => $maxsize,
+        DISABLE_UPLOADS => $uploads,
+    );
+    $r->pnotes('INPUT',$apr->parms);
+    $r->pnotes('UPLOADS',[ $apr->upload ]);
     if ($r ne $or) {
-	$or->pnotes('INPUT',$r->pnotes('INPUT'));
-	$or->pnotes('UPLOADS',$r->pnotes('UPLOADS'));
-	$or->pnotes('COOKIES',$r->pnotes('COOKIES'));
+        $or->pnotes('INPUT',$r->pnotes('INPUT'));
+        $or->pnotes('UPLOADS',$r->pnotes('UPLOADS'));
     }
 }
 # ____ End of parse_input ____
@@ -179,7 +199,8 @@ sub send_cookie($@) {
     my ($self, %settings) = @_;
     $self->debug(3,"======= send_cookie(".join(',',@_).")");
     my $r = Apache->request();
-    my ($auth_name, $auth_type) = ($r->auth_name, $r->auth_type);
+    my $auth_name = $r->auth_name || 'AxKitSession';
+    my $auth_type = $r->auth_type || __PACKAGE__;
 
     return if $r->dir_config($auth_name.'NoCookie');
 
@@ -215,7 +236,8 @@ sub key ($) {
     my $self = shift;
     $self->debug(3,"======= key(".join(',',@_).")");
     my $r = Apache->request;
-    my ($auth_type, $auth_name) = ($r->auth_type, $r->auth_name);
+    my $auth_name = $r->auth_name || 'AxKitSession';
+    my $auth_type = $r->auth_type || __PACKAGE__;
 
     parse_input();
     my $mr = $r;
@@ -228,14 +250,14 @@ sub key ($) {
     my $session = $mr->notes('SESSION_ID');
     if ($session) {
         $r->notes('SESSION_ID',$session);
-	$self->debug(5,"- present session: $session");
-	return $session;
+        $self->debug(5,"- present session: $session");
+        return $session;
     }
     $session = $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name};
     if ($session) {
-	$self->debug(5,"- cookie session: $session");
+        $self->debug(5,"- cookie session: $session");
         $r->notes('SESSION_ID',$session);
-	return $session;
+        return $session;
     }
     my $prefix = $r->notes('SessionPrefix');
 
@@ -250,16 +272,20 @@ sub key ($) {
         $x = $mr->server->port;
         $session =~ s/^:$x//i;
         $session =~ s/^\/+([^\/]+)\/.*$/$1/;
-        $self->debug(5,"- session after stripping: $session, prefix: $prefix");
-        if (substr($session,0,length($prefix)) eq $prefix) {
-            $self->debug(4,"Referer: ".$r->header_in('Referer').", session: $session");
-            # redirect to the sessionified URL if we took our ID from Referer:
-            if (substr($rest,0,1) eq '/') {
-		$self->debug(1,"! absolute link from $ref to $rest");
-                $r->status(REDIRECT);
-                $self->external_redirect($self->save_params("/$session$rest"));
-                return REDIRECT;
+	if (substr($session,0,length($prefix)) eq $prefix) {
+            my $sess = $self->_get_session_from_store($r,substr($session,length($prefix))); # not revive logged out sessions
+            $self->debug(5,"- session after stripping: $session, prefix: $prefix");
+            if (!$sess or keys(%$sess) > 1) {
+                $self->debug(4,"Referer: ".$r->header_in('Referer').", session: $session");
+                # redirect to the sessionified URL if we took our ID from Referer:
+                if (substr($rest,0,1) eq '/') {
+                    $self->debug(1,"! absolute link from $ref to $rest");
+                    $r->status(REDIRECT);
+                    $self->external_redirect($self->save_params("/$session$rest"));
+                    return REDIRECT;
+		}
             }
+	    untie(%$sess) if $sess;
         } else {
             undef $session;
         }
@@ -282,8 +308,8 @@ sub recognize_user ($$) {
 #------------------------
     my ($self, $r) = @_;
     $self->debug(3,"======= recognize_user(".join(',',@_).")");
-    my ($auth_type, $auth_name) = ($r->auth_type, $r->auth_name);
-    return unless $auth_type && $auth_name;
+    my $auth_name = $r->auth_name || 'AxKitSession';
+    my $auth_type = $r->auth_type || __PACKAGE__;
 
     my $session = $self->key();
     return REDIRECT if $session eq REDIRECT;
@@ -354,19 +380,28 @@ sub fixup_redirect ($$) {
 #------------------------
     my ($self, $r)  = @_;
     $self->debug(3,"======= fixup_redirect(".join(',',@_).")");
-    parse_input();
+    parse_input(1);
+
+    my $mr = $r;
+    while ($mr->prev) {
+        $mr = $mr->prev;
+        $mr = $mr->main || $mr;
+    }
+    $mr = $mr->main || $mr;
+    
     $r->pnotes('INPUT')->{'url'} = $1 if ($r->uri =~ m{^/[a-z]+(/.*)$});
     $r->pnotes('INPUT')->{'url'} =~ s{^/([a-z0-9]+://)}{$1};
     if (!$r->header_out('Location') && (!$r->prev || !$r->prev->header_out('Location')) && !$r->pnotes('INPUT')->{'url'}) {
         $self->debug(1,'called without location header or url paramater');
         return SERVER_ERROR;
     }
-
-    my $session = $r->notes('SESSION_URLPREFIX') || ($r->prev?$r->prev->notes('SESSION_URLPREFIX'):'') || '';
+    
+    my $session = $r->notes('SESSION_URLPREFIX') || $mr->notes('SESSION_URLPREFIX') || '';
 
     my $uri;
 
     $uri = Apache::URI->parse($r, $r->header_out('Location') || ($r->prev?$r->prev->header_out('Location'):undef) || $r->pnotes('INPUT')->{'url'});
+    $self->debug(6,"Session: $session, uri: ".$uri->unparse);
     my $same_host = (!$uri->hostname || (lc($uri->hostname) eq lc($r->hostname) && ($uri->port||80) == $r->server->port));
 
     # we have not been internally redirected - show the refresh page, or redirect to
@@ -382,7 +417,7 @@ sub fixup_redirect ($$) {
         $self->debug(6,"different host");
         if ((!$r->prev || !$r->prev->header_out('Location')) && !$r->header_out('Location')) {
             $self->debug(6,"called externally");
-            if (!$session || $uri->main->parsed_uri->path !~ /^$session/) {
+            if (!$session || $mr->parsed_uri->path !~ /^$session/) {
                 $self->debug(6,"refresh");
                 # we have been called without session id. it's safe now to refresh
                 my $location    = $uri->unparse;
@@ -409,14 +444,14 @@ EOF
             }
         }
 
-        $self->debug(6,"external redirect to self");
+        $self->debug(6,"external redirect to self, ".$mr->uri);
         # remove session ID and externally redirect to ourselves
-        $uri->path(substr($uri->path,length($session))) if ($session && $uri->path =~ /^$session/);
-        if ($session && $r->main && $r->main->parsed_uri->path =~ /^$session/) {
-            my $myuri = $r->parsed_uri;
-            $myuri->query('url='.uri_escape($uri->unparse));
+        if ($session && $mr->parsed_uri->path =~ /^$session/) {
+            my $myuri = $mr->parsed_uri;
+            $myuri->path($redirect_location.'/'.$uri->unparse);
             $uri = $myuri;
         }
+        $uri->path(substr($uri->path,length($session))) if ($session && $uri->path =~ /^$session/);
     }
 
 
@@ -461,14 +496,15 @@ sub login ($$) {
 #---------------
     my ($self, $r, $destination ) = @_;
     $self->debug(3,"======= login(".join(',',@_).")");
-    my ($auth_type, $auth_name) = ($r->auth_type, $r->auth_name);
+    my $auth_name = $r->auth_name || 'AxKitSession';
+    my $auth_type = $r->auth_type || __PACKAGE__;
 
-    parse_input();
+    parse_input(1);
     my $args = $r->pnotes('INPUT');
 
     $destination = $$args{'destination'} if @_ < 3;
     if ($destination) {
-	$destination = URI->new_abs($destination, $r->uri);
+        $destination = URI->new_abs($destination, $r->uri);
     } else {
         my $mr = $r;
         $mr = $mr->prev while ($mr->prev);
@@ -521,18 +557,21 @@ sub login ($$) {
 
             # don't redirect if we only set a cookie
             my ($auth_user, $error_message) = $auth_type->authen_ses_key($r, $ses_key);
-            $self->debug(2,"login() not redirecting, user = $auth_user, SID = $ses_key");
+            $self->debug(2,"login() not redirecting, just setting cookie: user = $auth_user, SID = $ses_key");
 
             return SERVER_ERROR unless defined $auth_user;
 
             $r->notes('SESSION_ID',$ses_key);
-            $r->connection->auth_type($auth_type);
             $r->connection->user($auth_user);
             return OK;
         }
 
     }
 
+    if ($destination eq 'none') {
+	$self->debug(2,"login() not redirecting: requested by application");
+	return OK;
+    }
     $self->debug(2,"login() redirecting to $destination");
     return $self->external_redirect($destination);
 }
@@ -548,14 +587,15 @@ sub orig_logout ($$) {
 #----------------
     my ($self,$r, $location) = @_;
     $self->debug(3,"======= logout(".join(',',@_).")");
-    my ($auth_type, $auth_name) = ($r->auth_type, $r->auth_name);
+    my $auth_name = $r->auth_name || 'AxKitSession';
+    my $auth_type = $r->auth_type || __PACKAGE__;
 
     # Send the Set-Cookie header to expire the auth cookie.
     $self->send_cookie(value=>'none', expires=>'-1d');
 
     $r->no_cache(1) unless $r->dir_config($auth_name.'Cache');
     $location = $r->dir_config($auth_name.'LogoutURI') if @_ < 3;
-    $r->notes('SESSION_URLPREFIX', undef);  # so error doc doesn't fixup.
+    $r->notes('SESSION_URLPREFIX',''); # so error doc doesn't fixup.
     return OK if !$location;
     $r->header_out(Location => $location);
     return REDIRECT;
@@ -573,28 +613,27 @@ sub authenticate ($$) {
     $self->debug(3,"======= authenticate(".join(',',@_).")");
     my ($authen_script, $auth_user);
 
+    my $mr = $r;
+    $mr = $mr->prev while ($mr->prev && !$mr->pnotes('SESSION'));
+    $r->pnotes('SESSION',$mr->pnotes('SESSION'));
     # This is a way to open up some documents/directories
     return OK if lc $r->auth_name eq 'none';
-    return OK if $r->uri eq $r->dir_config(($r->auth_name).'LoginScript');
+    return OK if $r->uri eq $r->dir_config(($r->auth_name || 'AxKitSession').'LoginScript');
+    return OK if ($r->main?$r->main->uri:$r->uri) =~ m/^$redirect_location(\/|$)/;
 
     # Only authenticate the first internal request
     # no. See sub authorize for rationale
     #return OK unless $r->is_initial_req;
 
-    if ($r->auth_type ne $auth_type) {
+    if (defined $r->auth_type && $r->auth_type ne $auth_type) {
         # This location requires authentication because we are being called,
         # but we don't handle this AuthType.
         $self->debug(3,"AuthType mismatch: $auth_type != ".$r->auth_type);
         return DECLINED;
     }
 
-    my $auth_name = $r->auth_name;
+    my $auth_name = $r->auth_name || 'AxKitSession';
     $self->debug(2,"auth_name= '$auth_name'");
-
-    unless ($auth_name) {
-        $r->log_reason("AuthName not set, AuthType=$auth_type", $r->uri);
-        return SERVER_ERROR;
-    }
 
     parse_input();
 
@@ -609,7 +648,7 @@ sub authenticate ($$) {
 
     unless ($session) {
 
-	$error_message = 'no_session_provided';
+        $error_message = 'no_session_provided';
 
     } else {
 
@@ -620,7 +659,6 @@ sub authenticate ($$) {
             # Tell the rest of Apache what the authentication method and
             # user is.
 
-            $r->connection->auth_type($auth_type);
             $r->connection->user($auth_user);
             $self->debug(1,"user authenticated as $auth_user. Exiting Authen.");
 
@@ -666,7 +704,7 @@ sub authenticate ($$) {
         $self->debug(2,'LoginScript=NONE - calling login()');
 
         my $rc = $auth_type->login($r, $self->save_params($r->uri));
-        $self->save_reason($error_message) if ($r->is_main());
+	#$self->save_reason($error_message) if ($r->is_main());
         return $rc;
     }
     $self->save_reason($error_message) if ($r->is_main());
@@ -711,7 +749,6 @@ sub initialize_url_sessions($@) {
     push @Apache::ReadConfig::PerlTransHandler, $self.'->translate_session_uri';
 
     $Apache::ReadConfig::Location{$redirect_location} = {
-        'AuthName' => 'none',
         'SetHandler' => 'perl-script',
         'PerlHandler' => $self.'->fixup_redirect',
     };
@@ -721,27 +758,7 @@ sub initialize_url_sessions($@) {
 # ____ End of import ____
 
 $redirect_location ||= '/redirect';
-__PACKAGE__->initialize_url_sessions($redirect_location) if ($Apache::Server::Starting);
-
-#sub import($;$) {
-#    return unless $Apache::Server::Starting;
-#    my ($self,$redirect) = @_;
-#
-#    push @Apache::ReadConfig::ErrorDocument, [ 302, $redirect ];
-#    push @Apache::ReadConfig::ErrorDocument, [ 301, $redirect ];
-#    push @Apache::ReadConfig::PerlTransHandler, $self.'->translate_session_uri';
-#
-#    $Apache::ReadConfig::Location{$redirect} = {
-#        'AuthName' => 'none',
-#        'SetHandler' => 'perl-script',
-#        'PerlHandler' => $self.'->fixup_redirect',
-#    };
-#    
-#    my $file = $self;
-#    $file =~ s{::}{/}g;
-#    delete $INC{"$file.pm"};
-#    print STDERR "$file\n";
-#}
+#__PACKAGE__->initialize_url_sessions($redirect_location) if ($Apache::Server::Starting);
 
 #
 # end of AuthCookieURL.pm
@@ -759,17 +776,14 @@ sub handler {
     my ($r) = @_;
     my $self = __PACKAGE__;
 
-    # some other auth handler already ran
-    return OK if $r->connection->user or $r->auth_type ne $self;
-
-    $r->auth_type($self);
-    $r->auth_name('AxKitSession') unless $r->auth_name;
+    #$self->debug(5,"Plugin usage: ".$r->connection->user." / ".$r->auth_type);
+    return OK if lc($r->auth_type) eq 'none';
 
     my $rc = $self->authenticate($r);
     return OK if $rc == DECLINED;
     return $rc if $rc != OK;
 
-    $rc = $self->authorize($r);
+    $rc = $self->authorize($r,[['valid-user']]);
     return OK if $rc == DECLINED;
     return $rc;
 }
@@ -796,7 +810,6 @@ sub save_reason($;$) {
         my $r = Apache->request();
         $$session{'auth_location'} = $r->uri;
         $$session{'auth_location'} .= '?'.$r->args if ($r->args);
-        warn("saved location: ".$$session{'auth_location'});
     }
 }
 
@@ -805,7 +818,6 @@ sub get_reason($) {
     $self->debug(3,"--------- get_reason(".join(',',@_).")");
     my $session = Apache->request()->pnotes('SESSION') || return $self->orig_get_reason();
 
-    warn("got location: ".$$session{'auth_location'});
     $$session{'auth_reason'};
 }
 
@@ -823,7 +835,7 @@ sub save_params ($$) {
     my $r = Apache->request();
     my $session = $r->pnotes('SESSION') || return $self->orig_save_params($uri);
 
-    $self->parse_input();
+    parse_input(1);
     my $in = $r->pnotes('INPUT');
     my @out = ();
     while(my($key,$val) = each %$in) {
@@ -862,7 +874,7 @@ sub _cleanup_session ($$) {
 sub _get_session_from_store($$;$) {
     my ($self, $r, $session_id) = @_;
     $self->debug(3,"--------- _get_session_from_store(".join(',',@_).")");
-    my $auth_name = $r->auth_name;
+    my $auth_name = $r->auth_name || 'AxKitSession';
     my @now = localtime;
     my $session = {};
     my $dir = $r->dir_config($auth_name.'Dir') || '/tmp/sessions';
@@ -878,15 +890,16 @@ sub _get_session_from_store($$;$) {
             $r->dir_config->get($auth_name.'ManagerArgs'),
     };
     eval {
+        eval "require ".($r->dir_config($auth_name.'Manager')||'Apache::Session::File') or die $@;
         tie %{$session}, $r->dir_config($auth_name.'Manager')||'Apache::Session::File', $session_id, $args;
     };
-    #die "Session creation failed. Depending on which session module you use, make sure that directories $absdir, $absdir/locks or $absdir/counters, or database $dir exist and are writable. The error message was: $@" if $@;
+    die "Session creation failed. Depending on which session module you use, make sure that directories $absdir, $absdir/locks or $absdir/counters, or database $dir exist and are writable. The error message was: $@" if $@ && !defined $session_id;
     return $session;
 }
 
 sub _get_session($$;$) {
     my ($self, $r, $session_id) = @_;
-    my $auth_name = $r->auth_name;
+    my $auth_name = $r->auth_name || 'AxKitSession';
     $self->debug(3,"--------- _get_session(".join(',',@_).")");
     my $dir = $r->dir_config($auth_name.'Dir') || '/tmp/sessions';
     my $expire = ($r->dir_config($auth_name.'Expire') || 30) / 5 + 1; #/
@@ -900,7 +913,7 @@ sub _get_session($$;$) {
     my $mr = $r;
     # find existing session - a bit more complicated than usual since the request could be in
     # different stages of authentication
-    if ($session_id) {
+    if (1 || $session_id) {
         if ($mr->main && (!$mr->pnotes('SESSION') || $mr->pnotes('SESSION')->{'_session_id'} ne $session_id)) {
             $mr = $mr->main;
             #$self->debug(5,"main: ".$mr->main.", sid=".($mr->pnotes('SESSION')||{})->{'_session_id'});
@@ -920,7 +933,7 @@ sub _get_session($$;$) {
     my $session = {};
 
     # retrieve session from a previous internal request
-    $session = $mr->pnotes('SESSION') if $mr->pnotes('SESSION');
+    $session = $mr->pnotes('SESSION') if $mr->pnotes('SESSION'); # and $session_id;
     $self->debug(5,"checkpoint beta, session={".join(',',keys %$session)."}");
     # create/retrieve session, providing parameters for several common session managers
     if (!keys %$session) {
@@ -943,15 +956,17 @@ sub _get_session($$;$) {
     if (exists $$session{'auth_remote_ip'} && $remote ne $$session{'auth_remote_ip'}) {
         $self->debug(3, "ip mispatch");
         return (undef, 'ip_mismatch') if ($$session{'auth_access_user'} && $$session{'auth_access_user'} ne $guest);
-    } elsif ($$session{'auth_access_user'} && $$session{'auth_access_user'} ne $guest && exists $$session{'auth_last_access'} && time()/300 > $$session{'auth_last_access'}+$expire) {
+    } elsif ($$session{'auth_access_user'} && $$session{'auth_access_user'} ne $guest && exists $$session{'auth_last_access'} && int(time()/300) > $$session{'auth_last_access'}+$expire) {
         $self->debug(3, "session expired");
+        %$session = ();
+        eval { tied(%$session)->delete };
         return (undef, 'session_expired');
     } elsif (!exists $$session{'auth_remote_ip'}) {
         $$session{'auth_remote_ip'} = $remote;
     }
 
     # force new session ID every 5 minutes if Apache::Session::Counted is used, don't write session file on each access
-    $$session{'auth_last_access'} = time()/300;
+    $$session{'auth_last_access'} = int(time()/300) if $$session{'auth_last_access'} < int(time()/300);
 
     # store session hash in pnotes
     $r->pnotes('SESSION',$session);
@@ -990,6 +1005,7 @@ sub authen_cred($$\@) {
     my ($session, $err) = $self->_get_session($r);
     return (undef, $err) if $err;
     $$session{'auth_access_user'} = $credentials[0] if defined $credentials[0];
+    $r->pnotes('SESSION',$session);
     return $$session{'_session_id'};
 }
 
@@ -1007,7 +1023,7 @@ sub logout($$) {
     $self->debug(3,"--------- logout(".join(',',$self,@_).")");
     my $session = $r->pnotes('SESSION');
     eval {
-        %$session = ('_session_id' => $$session{'_session_id'});
+        %$session = ();
         tied(%$session)->delete;
     };
     $self->debug(5,'session delete failed: '.$@) if $@;
@@ -1174,7 +1190,7 @@ sub set_permissions($$@) {
     }
     # Enabling write access to httpd config files is dangerous, so you will have to find
     # out yourself what to do. Do this only if you absolutely know what you are doing.
-    my $configfile = $r->dir_config($r->auth_name.'AuthFile') || die 'read the fine manual.';
+    my $configfile = $r->dir_config(($r->auth_name || 'AxKitSession').'AuthFile') || die 'read the fine manual.';
     local (*IN, *OUT);
     if (substr($configfile,0,1) eq '/') {
         open(IN, $configfile) || die "file open error (read): $configfile";
@@ -1243,24 +1259,24 @@ sub set_permission_set($$@) {
 }
 
 # overriding AuthCookieURL to implement OR style require handling
-sub authorize ($$) {
-    my ($self, $r) = @_;
+sub authorize ($$;$) {
+    my ($self, $r, $reqs) = @_;
     my $auth_type = $self;
     $self->debug(3,"------- authorize(".join(',',@_).")");
 
     # This is a way to open up some documents/directories
     return OK if lc $r->auth_name eq 'none';
-    return OK if $r->dir_config('DisableAuthCookieURL');
-    return OK if $r->uri eq $r->dir_config(($r->auth_name).'LoginScript');
+    return OK if $r->uri eq $r->dir_config(($r->auth_name || 'AxKitSession').'LoginScript');
+    return OK if ($r->main?$r->main->uri:$r->uri) =~ m/^$redirect_location(\/|$)/;
 
-    if ($r->auth_type ne $auth_type) {
+    if (defined $r->auth_type && $r->auth_type ne $auth_type) {
         # This location requires authentication because we are being called,
         # but we don't handle this AuthType.
         $self->debug(3,"AuthType mismatch: $auth_type != ".$r->auth_type);
         return DECLINED;
     }
 
-    my @reqs = $self->get_permissions($r) or return DECLINED;
+    my @reqs = ($reqs?@$reqs:$self->get_permissions($r)) or return DECLINED;
 
     my $user = $r->connection->user;
 
@@ -1299,144 +1315,166 @@ Apache::AxKit::Plugin::Session - flexible session management for AxKit
 
 =head1 SYNOPSIS
 
-Session management only: (minimal configuration, uses cookies, won't work without cookies, in httpd.conf or .htaccess)
+=head2 Basic configuration
+
+This is the B<quickstart:>
 
     AxAddPlugin Apache::AxKit::Plugin::Session
 
+Put it in .htaccess or httpd.conf. That's all. Easy, huh?
 
-Session Management only: (uses cookies, falls back to URL session ID tracking, must be in httpd.conf)
+Now some B<alternatives:>
 
-    PerlModule Apache::AxKit::Plugin::Session;
+The above line only applies to AxKit documents - usually the right thing. To
+get sessions for all files, use:
 
+    PerlFixupHandler Apache::AxKit::Plugin::Session
 
-Full-featured configuration:
+The above variants need cookies enabled. Visitors that disable them are
+honestly screwed. But there is rescue: Get automatic fallback to URL-Encoded
+session IDs:
 
-    #### this must be in httpd.conf
-    # want a different redirector location? (default is '/redirect')
-    #<Perl>$Apache::AxKit::Plugin::Session::redirect_location = "/redir";</Perl>
+    PerlModule Apache::AxKit::Plugin::Session
 
-    # use URL sessions
-    PerlModule Apache::AxKit::Plugin::Session;
+    AuthType Apache::AxKit::Plugin::Session
+    AuthName AxKitSession
 
-    #### the rest may go into .htaccess
-    # don't use URL sessions
-    #AxAddPlugin Apache::AxKit::Plugin::Session;
+    PerlAuthenHandler Apache::AxKit::Plugin::Session->authenticate
+    PerlAuthzHandler Apache::AxKit::Plugin::Session->authorize
+    require valid-user
 
-    # Your session manager, if not using the default "Apache::Session::File'
-    #PerlModule Apache::Session::Counted
+(That _must_ be in httpd.conf)
 
-    ### Settings:
-    # Prefix "AxKitSession" is set by AuthName
-    # unless otherwise noted, all settings may appear
-    # in main config and in directory config/.htaccess
-    # how long a session is valid when idle (minutes, multiple of 5, default 30)
-    #PerlSetVar AxKitSessionExpire 30
+Note that URL-encoded session IDs are generally regarded bad style and can
+create a huge security risk. Used carefully it can mean an enhancement for
+your customers. That said, URL sessions are deprecated. There is a different
+solution under development.
 
-    # Cookie settings:
-    # Path can only be set to "/" if using URL sessions
-    #PerlSetVar AxKitSessionPath /
-    #PerlSetVar AxKitSessionExpires +1d
-    #PerlSetVar AxKitSessionDomain some.domain
-    #PerlSetVar AxKitSessionSecure 1
+So, now we made it through basic configuration. Let's try...
 
-    # Disable cookies: (useful for Apache::Session::Counted, it won't currently work with cookies)
-    #PerlSetVar AxKitSessionNoCookie 1
+=head2 Protecting some documents
 
-    # Location of login page: (it must call A:A:P:S->login($r) on successful login)
-    #PerlSetVar AxKitSessionLoginScript /login.xsp
-    # do not enforce logins (default, makes all users appear as 'guest' initially)
-    #PerlSetVar AxKitSessionLoginScript NONE
+To do so, we first need to silence apache's internal authorization:
 
-    # Want a login screen when the guest privileges don't suffice?
-    #ErrorDocument 403 /redirect?url=/login.xsp
+    AuthType Apache::AxKit::Plugin::Session
+    AuthName AxKitSession
+    PerlAuthenHandler Apache::AxKit::Plugin::Session->authenticate
+    PerlAuthzHandler Apache::AxKit::Plugin::Session->authorize
 
-    # Debugging:
-    #PerlSetVar AuthCookieURLDebug 5
+Then we can do:
 
-    # Prefix to session ID in URLs: (can only be set in main config)
-    #PerlSetVar SessionPrefix Session-
+    require user admin
 
-    # Which session module to use: (supported are File, DB_File, Flex and (without cookies) Counted, File is default)
-    #PerlSetVar AxKitSessionManager Apache::Session::File
+Put that into a .htaccess, or in a <Location> section, or similar.
 
-    # Where to put session files (data and locks):
-    #PerlSetVar AxKitSessionDir /tmp/sessions
+But how can user admin log in? Want a login screen when privileges don't suffice?
 
-    # What name the guest account shall have: (set to some false value to disable)
-    #PerlSetVar AxKitSessionGuest guest
+    ErrorDocument 403 /login.xsp
 
-    # An arbitrary (nonexistant) session id for global data:
-    # Note: This must be a valid session ID
-    #PerlSetVar AxKitSessionGlobal 00000000000000000000000000000000
+C<login.xsp> must call <auth:login>, see L<AxKit::XSP::Auth>.
 
-    # How to check IP addresses against a session:
-    # 0 - not at all
-    # 1 - use numeric IP address or X-Forwarded-For, if present
-    # 2 - use numeric IP address with last part stripped
-    # 3 - use numeric IP address
-    #PerlSetVar AxKitSessionIPCheck 1
+B<Advanced protection:>
 
-    #
-    ### End of settings
+Allow access to user JohnDoe and to user JaneDoe:
 
-    ### Directory settings
-    #
-    <Location /protected>
-        AuthType Apache::AxKit::Plugin::Session
-        AuthName AxKitSession
-        PerlAuthenHandler Apache::AxKit::Plugin::Session->authenticate
-        PerlAuthzHandler Apache::AxKit::Plugin::Session->authorize
-
-        # Important: access is granted if at least one rule matches
-        # allow access to any user (including 'guest' users)
-        require valid-user
-
-        # or: allow access to user JohnDoe and to user JaneDoe
         require user JohnDoe JaneDoe
 
-        # or: allow access to members of group internal and mambers of group admin
+Allow access to members of group internal and mambers of group admin:
+
         require group internal admin
 
-        # or: allow access to members with level 42 or higher
+Allow access to members with level 42 or higher:
+
         require level 42
 
-        # or: allow access to all users except guest
+Allow access to all users except guest:
+
         require not user guest
 
-        # or: allow access to all users who are in group powerusers AND
-        #  either longtimeusers or verylongtimeusers (compare "group" above)
-        require combined group powerusers group "longtimeusers verylongtimeusers"
+Allow access to all users who are in group powerusers AND
+ either longtimeusers or verylongtimeusers (compare "group" above):
 
-        # or: allow access if (group == longtimeusers AND (group == powerusers OR level >= 10))
+	require combined group powerusers group "longtimeusers verylongtimeusers"
+
+Allow access if (group == longtimeusers AND (group == powerusers OR level >= 10))
+
         require combined group longtimeusers alternate "group powerusers level 10"
 
-    </Location>
+You can have as many "require" lines as you want. Access is granted if at least one
+rule matches.
 
+=head2 Advanced options
 
-    # Directory without restrictions, but tracking sessions
-    <Location />
-      AuthType Apache::AxKit::Plugin::Session
-      AuthName AxKitSession
-      PerlFixupHandler Apache::AxKit::Plugin::Session->recognize_user
-    </Location>
+How long is a session valid when idle? (minutes, must be multiple of 5)
 
-    # provide open access to some areas below
-    <Location /protected/open>
-        PerlSetVar DisableAuthCookieURL 1
-    </Location>
+    PerlSetVar AxKitSessionExpire 30
 
-    #
-    ### End of directory settings
+Which session module should be used?
+
+    PerlSetVar AxKitSessionManager Apache::Session::File
+
+Where should session files (data and locks) go?
+
+    PerlSetVar AxKitSessionDir /tmp/sessions
+
+How's the "guest" user called?
+
+    PerlSetVar AxKitSessionGuest guest
+
+Want to check the IP address for sessions?
+
+    PerlSetVar AxKitSessionIPCheck 1
+
+Beware that IP checking is dangerous: Some people have different IP addresses
+for each request, AOL customers for example. There are several values for you
+to choose: 0 = no check; 1 = use numeric IP address or X-Forwarded-For, if present;
+2 = use numeric IP address with last part stripped (/24 subnet); 3 = use
+numeric IP address
+
+=head2 Cookie options
+
+Look at L<Apache::Cookie>. You'll quickly get the idea:
+
+    PerlSetVar AxKitSessionPath /
+    PerlSetVar AxKitSessionExpires +1d
+    PerlSetVar AxKitSessionDomain some.domain
+    PerlSetVar AxKitSessionSecure 1
+
+Path can only be set to "/" if using URL sessions
+
+Disable cookies: (force URL-encoded sessions)
+
+    PerlSetVar AxKitSessionNoCookie 1
+
+=head2 Internal options
+
+DANGER! Do not fiddle with these unless you know what you are doing.
+
+Want a different redirector location? (default is '/redirect')
+
+    <Perl>$Apache::AxKit::Plugin::Session::redirect_location = "/redir";</Perl>
+
+Debugging:
+
+    PerlSetVar AxDebugSession 5
+
+Prefix to session ID in URLs:
+
+    PerlSetVar SessionPrefix Session-
+
+An arbitrary (nonexistant) session id for global data:
+
+    PerlSetVar AxKitSessionGlobal 00000000000000000000000000000000
+
+Note: This must be a valid session ID
 
 =head1 DESCRIPTION
 
-WARNING: This version is for AxKit 1.6.1 and above! For AxKit 1.6 and below use version
-0.92 or lower. I might reintroduce backwards compatibility if feedback tells me there is a need.
+WARNING: This version is for AxKit 1.6.1 and above!
 
 This module is an authentication and authorization handler for Apache, designed specifically
 to work with Apache::AxKit. That said, it should be generic enough to work without it as well, only
 much of its comfort lies in a separate XSP taglib which is distributed alongside this module.
-
 It combines authentication and authorization in Apache::AuthCookieURL style with session management
 via one of the Apache::Session modules. It even works fine with Apache::Session::Counted. See those
 manpages for more information, but be sure to note the differences in configuration!
@@ -1459,21 +1497,26 @@ In addition to Apache::AuthCookieURL, you get:
 =item * authorization based on users, groups or levels, including logical
         AND, OR and NOT of any requirement
 
-=item * $r->pnotes('INPUT','COOKIES','UPLOADS') from Apache::RequestNotes
-
 =item * great AxKit taglibs for retrieving, checking and changing most settings
 
 =back
 
-To use authentication, you have to provide a login script which displays a login form,
-verifies those values and calls Apache::AxKit::Plugin::Session->login($r,$user_name) on success.
-This can easily be done with the PerForm XSP taglib combined with the Auth taglib. If you want logouts, you have to
-write a custom logout script. Both functions are provided in the Auth XSP taglib
-for ease of use.
+To use authentication, you have to provide a login page which displays a login form,
+verifies the values and calls <auth:login> (assuming XSP). Logout pages work
+via <auth:logout>. Both functions are provided in the Auth XSP taglib, see
+L<AxKit::XSP::Auth> for details.
 
-Authorization via user name works by comparing the user name given at login time.
+=head1 ADVANCED
 
-Authorization via groups and levels works by using 2 additional session variables:
+This module is extremely customizable. Please skip this section until you have
+the module up and running. This section is only for advanced usage.
+
+=head2 Perl interface 
+
+Authorization via user name works by comparing the user name given at login time:
+Apache::AxKit::Plugin::Session->login($r,$user_name)
+
+Authorization via groups and levels works by using 2 session variables:
 
 =over 4
 
@@ -1489,65 +1532,63 @@ Authorization via groups and levels works by using 2 additional session variable
 
 =back
 
-Multiple require lines are handled unlike in Apache::AuthCookieURL as a logical OR.
-
 Note that the session dir will always leak. You will have to do manual cleanup, since
-automatci removal of old session records is only possible in some cases. The
+automatic removal of old session records is only possible in some cases. The
 distribution tarball contains an example script to do that.
 
 =head1 CONFIGURATION SETTINGS
 
-Some settings apply only to one AuthName, but since settings can as well be overridden
-in <Directory|Location>/</Directory|Location>, there is no real need for different
-AuthNames. These settings are prefixed by the current AuthName.
+See the synopsis for an overview and quick explanation.
 
 All settings are set with PerlSetVar and may occur in any location PerlSetVar is allowed in,
 except SessionPrefix, which must be a global setting.
 
 =over 4
 
-=item * AuthCookieURLDebug, DisableAuthCookieURL, SessionPrefix, <AuthName>Cache,
-<AuthName>LoginScript, <AuthName>LogoutURI, <AuthName>NoCookie, <AuthName>(Path|Expires|Domain|Secure)
+=item * AuthCookieURLDebug, DisableAuthCookieURL, SessionPrefix, AxKitSessionCache,
+AxKitSessionLoginScript, AxKitSessionLogoutURI, AxKitSessionNoCookie, AxKitSession(Path|Expires|Domain|Secure)
 
-These settings are the same as in Apache::AuthCookieURL.
+These settings are the same as in Apache::AuthCookieURL. Some of them are very advanced
+and probably not needed at all. Some may be broken by now. Please only use the documented
+variables shown in the synopsis.
 
-=item * <AuthName>Expire
+=item * AxKitSessionExpire
 
 Sets the session expire timeout in minutes. The value must be a multiple of 5.
 
 Example: PerlSetVar AxKitSessionExpire 30
 
-Note that the session expire timeout (<AuthName>Expire) is different from the cookie expire
-timeout (<AuthName>Expires).  You should set the cookie expire timeout longer than the
+Note that the session expire timeout (AxKitSessionExpire) is different from the cookie expire
+timeout (AxKitSessionExpires).  You should set the cookie expire timeout longer than the
 session expire timeout so that the system can recognize when the session times out and
 produce a reasonable message to that effect.  (If the cookie times out first, then the system
 thinks the user has no session and will create a new one.  Furthermore, the system does not
 know that it can delete the old session information so you will just be wasting space.)  The
 default cookie timeout is +1d and the default session expire timeout is 30 minutes.
 
-=item * <AuthName>Manager
+=item * AxKitSessionManager
 
 Specifies the module to use for session handling. Directly supported are File,
 DB_File, Counted, and all DB server modules if connecting anonymously. For all
-other configurations (including Flex), you need <AuthName>ManagerArgs, too.
+other configurations (including Flex), you need AxKitSessionManagerArgs, too.
 
 Example: PerlSetVar AxKitSessionManager Apache::Session::Counted
 
-=item * <AuthName>ManagerArgs
+=item * AxKitSessionManagerArgs
 
 List of additional session manager parameters in the form: Name Value. Use
 with PerlAddVar.
 
 Example: PerlAddVar AxKitSessionManagerArgs User foo
 
-=item * <AuthName>Dir
+=item * AxKitSessionDir
 
 The location where all session files go, including lockfiles. If you are using
 a database server as session backend, this is the server specific db/table string.
 
 Example: PerlSetVar AxKitSessionDir /home/sites/site42/data/session
 
-=item * <AuthName>Guest
+=item * AxKitSessionGuest
 
 The user name to be recognized as guest account. Setting this to a false
 value (the default) disables automatic guest login. If logins are used at
@@ -1556,7 +1597,7 @@ no logins are used, this MUST be set to some value.
 
 Example: PerlSetVar AxKitSessionGuest guest
 
-=item * <AuthName>Global
+=item * AxKitSessionGlobal
 
 The "session" id used for global application data. This is just
 a simple session file and might not be very long-lasting. Real persistent
@@ -1565,7 +1606,7 @@ application data does not belong here. But this is the right place to put
 
 Example: PerlSetVar AxKitSessionGlobal 0
 
-=item * <AuthName>IPCheck
+=item * AxKitSessionIPCheck
 
 The level of IP matching in sessions. A session id is only valid when the
 connection is coming from the same remote address. This setting lets you
@@ -1577,18 +1618,7 @@ Example: PerlSetVar AxKitSessionIPCheck 3
 
 =back
 
-=head1 WARNING
-
-URL munging has security issues.  Session keys can get written to access logs, cached by
-browsers, leak outside your site, and can be broken if your pages use absolute links to other
-pages on-site (but there is HTTP Referer: header tracking for this case). Keep this in mind.
-
-The redirect handler tries to catch the case of external redirects by changing them into
-self-refreshing pages, thus removing a possibly sensitive http referrer header. This
-won't work from mod_perl, so use Apache::AuthCookieURL's fixup_redirect instead. If you are
-adding hyperlinks to your page, change http://www.foo.com to /redirect?url=http://www.foo.com
-
-=head1 ADVANCED
+=head2 Programming interface
 
 By subclassing, you can modify the authorization scheme to your hearts desires. You can store
 directory and file permissions in an RDBMS and you can invent new permission types.
@@ -1604,18 +1634,18 @@ For a new permission type 'foo', provide 3 subs: 'foo', 'pack_requirements_foo' 
 'unpack_requirements_foo'. sub 'foo' should return OK or FORBIDDEN depending on the parameters
 and the session variable 'auth_access_foo'. The other two subs can be aliased to
 'default_(un)pack_requirements' if your 'require foo' parses like a 'require group'. Read the
-source for more advanced usage.
+source for more information.
 
-=head1 TO DO
+=head1 WARNING
 
-=over 4
+URL munging has security issues.  Session keys can get written to access logs, cached by
+browsers, leak outside your site, and can be broken if your pages use absolute links to other
+pages on-site (but there is HTTP Referer: header tracking for this case). Keep this in mind.
 
-=item * set cookie on changed SID; without this, Apache::Session::Counted will not work
-    with cookies
-
-=item * somehow save (and restore) $r->pnotes('UPLOADS') in save_params, or maybe not (DoS)
-
-=back
+The redirect handler tries to catch the case of external redirects by changing them into
+self-refreshing pages, thus removing a possibly sensitive http referrer header. This
+won't work from mod_perl, so use Apache::AuthCookieURL's fixup_redirect instead. If you are
+adding hyperlinks to your page, change http://www.foo.com to /redirect?url=http://www.foo.com
 
 =head1 REQUIRED
 
@@ -1627,7 +1657,7 @@ Jörg Walter E<lt>jwalt@cpan.orgE<gt>.
 
 =head1 VERSION
 
-0.93
+0.98
 
 =head1 SEE ALSO
 

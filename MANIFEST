@@ -8,3 +8,6 @@ Makefile.PL
 README
 session-cleanup.sh
 test.pl
+logon.xsp
+logoff.xsp
+META.yml                                 Module meta-data (added by MakeMaker)

@@ -1,4 +1,4 @@
-Apache::AxKit::Plugin::Session version 0.90
+Apache::AxKit::Plugin::Session version 0.94
 ===========================================
 
 This is a session management plugin for AxKit. It features
@@ -29,7 +29,7 @@ DEPENDENCIES
 
 This module requires these other modules and libraries:
 
-  AxKit 1.5.1 or higher (specifically, the SimpleTalib module,
+  AxKit 1.6.1 or higher (specifically, the SimpleTalib module,
   which needs perl 5.6.0 or higher), Apache::RequestNotes and
   Apache::Session
 
