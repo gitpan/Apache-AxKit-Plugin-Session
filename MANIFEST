@@ -1,0 +1,9 @@
+lib/Apache/AxKit/Plugin/Session.pm
+lib/AxKit/XSP/Auth.pm
+lib/AxKit/XSP/Global.pm
+lib/AxKit/XSP/Session.pm
+Changes
+MANIFEST
+Makefile.PL
+README
+test.pl

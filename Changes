@@ -1,0 +1,6 @@
+Revision history for Perl extension Session.pm.
+
+0.01  Thu Mar 28 09:40:43 2002
+	- original version; created by h2xs 1.21 with options
+		-X lib/Apache/AxKit/Plugin/Session.pm lib/AxKit/XSP/Auth.pm lib/AxKit/XSP/Global.pm lib/AxKit/XSP/Session.pm
+
