@@ -9,7 +9,7 @@ BEGIN {
     use Apache::Session::File;
     use Apache::Constants qw(:common :response);
     #@Apache::AxKit::Plugin::Session::ISA = ('Apache::AuthCookieURL');
-    $Apache::AxKit::Plugin::Session::VERSION = 0.91;
+    $Apache::AxKit::Plugin::Session::VERSION = 0.92;
 }
 
 #######################################################
@@ -435,11 +435,24 @@ sub login ($$) {
     my $args = $r->pnotes('INPUT');
 
     $destination = $$args{'destination'} if @_ < 3;
-    if (!$destination) {
+    if ($destination) {
+        if (substr($destination,0,1) ne '/') {
+            $destination = "./$destination" if substr($destination,0,1) eq '.';
+
+            # relative path, so let's resolve the path ourselves
+            my $base = $r->uri;
+            $base =~ s{[^/]*$}{};
+            $destination = "$base$destination";
+            $destination =~ s{//+}{/}g;
+            while ($destination =~ s{/.(/|$)}{/}g) {}           # embedded ./
+            while ($destination =~ s{[^/]+/\.\.(/|$)}{}g) {}    # embedded ../
+            $destination =~ s{^(/\.\.)+(/|$)}{/}g;              # ../ off of "root"
+        }
+    } else {
         my $mr = $r;
         $mr = $mr->prev while ($mr->prev);
         $mr = $mr->main while ($mr->main);
-    $destination = $mr->uri;
+        $destination = $mr->uri;
     }
 
     $self->debug(1,"destination = '$destination'");
@@ -707,7 +720,7 @@ sub handler {
     my $self = __PACKAGE__;
 
     # some other auth handler already ran
-    return OK if $r->auth_user or $r->auth_type ne $self;
+    return OK if $r->connection->user or $r->auth_type ne $self;
 
     $r->auth_type($self);
     $r->auth_name('AxKitSession') unless $r->auth_name;
@@ -834,7 +847,7 @@ sub _get_session($$;$) {
         $check == 2?($r->connection->remote_ip =~ m/(.*)\./):
         $check == 3?($r->connection->remote_ip):
         '');
-    my $guest = $r->dir_config($auth_name.'Guest');
+    my $guest = $r->dir_config($auth_name.'Guest') || 'guest';
 
     my $mr = $r;
     # find existing session - a bit more complicated than usual since the request could be in
@@ -870,7 +883,7 @@ sub _get_session($$;$) {
             return (undef, 'bad_session_provided');
         }
     }
-        $self->debug(3,"checkpoint charlie, sid=".$$session{'_session_id'}.", keys = ".join(",",keys %$session));
+    $self->debug(3,"checkpoint charlie, sid=".$$session{'_session_id'}.", keys = ".join(",",keys %$session));
 
     $$session{'auth_access_user'} = $guest unless exists $$session{'auth_access_user'};
     $$session{'auth_first_access'} = time() unless exists $$session{'auth_first_access'};
@@ -882,15 +895,15 @@ sub _get_session($$;$) {
     if (exists $$session{'auth_remote_ip'} && $remote ne $$session{'auth_remote_ip'}) {
         $self->debug(3, "ip mispatch");
         return (undef, 'ip_mismatch') if ($$session{'auth_access_user'} && $$session{'auth_access_user'} ne $guest);
-    } elsif ($$session{'auth_access_user'} && $$session{'auth_access_user'} ne $guest && exists $$session{'auth_last_access'} && time()/300+$expire < $$session{'auth_last_access'}) { #/
+    } elsif ($$session{'auth_access_user'} && $$session{'auth_access_user'} ne $guest && exists $$session{'auth_last_access'} && time()/300 > $$session{'auth_last_access'}+$expire) {
         $self->debug(3, "session expired");
         return (undef, 'session_expired');
     } elsif (!exists $$session{'auth_remote_ip'}) {
         $$session{'auth_remote_ip'} = $remote;
     }
 
-    # force new session ID every 5 minutes if Apache::Session::Counted is used
-    $$session{'auth_last_access'} = time()/300; #/
+    # force new session ID every 5 minutes if Apache::Session::Counted is used, don't write session file on each access
+    $$session{'auth_last_access'} = time()/300;
 
     # store session hash in pnotes
     $r->pnotes('SESSION',$session);
@@ -968,6 +981,12 @@ sub logout($$) {
 }
 
 # 'require' handlers
+
+sub subrequest($$) {
+    my ($self, $r) = @_;
+    $self->debug(3,"--------- subrequest(".join(',',@_).")");
+    return ($r->is_initial_req?FORBIDDEN:OK);
+}
 
 sub group($$) {
     my ($self, $r, $args) = @_;
@@ -1047,6 +1066,7 @@ sub default_unpack_requirement {
     my ($self, $req, $args) = @_;
     return [ $req => [ split(/\s+/,$args) ] ];
 }
+*unpack_requirement_subrequest = \&default_unpack_requirement;
 *unpack_requirement_valid_user = \&default_unpack_requirement;
 *unpack_requirement_user = \&default_unpack_requirement;
 *unpack_requirement_group = \&default_unpack_requirement;
@@ -1083,6 +1103,7 @@ sub default_pack_requirement {
     my ($self, $args) = @_;
     return join(' ',@{$$args[1]});
 }
+*pack_requirement_subrequest = \&default_pack_requirement;
 *pack_requirement_valid_user = \&default_pack_requirement;
 *pack_requirement_user = \&default_pack_requirement;
 *pack_requirement_group = \&default_pack_requirement;
@@ -1244,12 +1265,12 @@ Apache::AxKit::Plugin::Session - flexible session management for AxKit
 
 =head1 SYNOPSIS
 
-Session management only: (minimal configuration, no URL session ID tracking, in httpd.conf or .htaccess)
+Session management only: (minimal configuration, uses cookies, won't work without cookies, in httpd.conf or .htaccess)
 
     AxAddPlugin Apache::AxKit::Plugin::Session
 
 
-Session Management only: (with URL session ID tracking, must be in httpd.conf)
+Session Management only: (uses cookies, falls back to URL session ID tracking, must be in httpd.conf)
 
     PerlModule Apache::AxKit::Plugin::Session;
 
@@ -1555,7 +1576,7 @@ Jörg Walter E<lt>jwalt@cpan.orgE<gt>.
 
 =head1 VERSION
 
-0.91
+0.92
 
 =head1 SEE ALSO
 

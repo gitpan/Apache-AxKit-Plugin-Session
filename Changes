@@ -1,5 +1,9 @@
 Revision history for Perl extension Session.pm.
 
+0.92
+	- fixed timeout bug (sessions didn't time out)
+	- fixed AxAddPlugin bug (plugin usage didn't work)
+
 0.91
 	- fixed bug where inifinite redirection occurred when
 	  URL sessions were deactivated
