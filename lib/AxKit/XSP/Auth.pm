@@ -3,6 +3,7 @@ package AxKit::XSP::Auth;
 use strict;
 use Apache::AxKit::Language::XSP::SimpleTaglib;
 use Apache::AxKit::Plugin::Session;
+use Crypt::GeneratePassword;
 $AxKit::XSP::Auth::VERSION = 0.90;
 $AxKit::XSP::Auth::NS = 'http://www.creITve.de/2002/XSP/Auth';
 
@@ -201,7 +202,7 @@ sub is_logged_in : expr
 sub get_permission : attribOrChild(target) struct
 {
 	return << 'EOC';
-$attr_target = (substr($attr_target,0,1) ne '/'?$r->uri():'').(length($attr_target)?'%23':'').$attr_target;
+$attr_target = URI->new_abs($attr_target, $r->uri);
 if (my $subr = $r->lookup_uri($attr_target)) {
 	$subr->pnotes('SESSION',$session);
 	my $type = $subr->auth_type;
@@ -215,7 +216,7 @@ EOC
 sub set_permission : attribOrChild(target) childStruct(@permission{$type *value &permission})
 {
 	return << 'EOC';
-$attr_target = (substr($attr_target,0,1) ne '/'?$r->uri():'').(length($attr_target)?'%23':'').$attr_target;
+$attr_target = URI->new_abs($attr_target, $r->uri);
 my $subr = $r->lookup_uri($attr_target);
 $subr->pnotes('SESSION',$session);
 my $type = $subr->auth_type;
@@ -226,7 +227,7 @@ EOC
 sub add_permission : attribOrChild(target) childStruct(@permission{$type *value &permission})
 {
 	return << 'EOC';
-$attr_target = (substr($attr_target,0,1) ne '/'?$r->uri():'').(length($attr_target)?'%23':'').$attr_target;
+$attr_target = URI->new_abs($attr_target, $r->uri);
 my $subr = $r->lookup_uri($attr_target);
 $subr->pnotes('SESSION',$session);
 my $type = $subr->auth_type;
@@ -237,7 +238,7 @@ EOC
 sub rem_permission : attribOrChild(target) childStruct(@permission{$type *value &permission})
 {
 	return << 'EOC';
-$attr_target = (substr($attr_target,0,1) ne '/'?$r->uri():'').(length($attr_target)?'%23':'').$attr_target;
+$attr_target = URI->new_abs($attr_target, $r->uri);
 my $subr = $r->lookup_uri($attr_target);
 $subr->pnotes('SESSION',$session);
 my $type = $subr->auth_type;
@@ -249,15 +250,9 @@ $type->set_permission_set($subr,@set);
 EOC
 }
 
-sub random_password : expr
+sub random_password : expr attribOrChild(lang,signs,numbers,minlen,maxlen)
 {
-	return << 'EOC';
-my $res;
-do {
-	$res = join('',@{['a'..'z', 'A'..'Z', 0..9]}[rand(62),rand(62),rand(62),rand(62),rand(62),rand(62)]);
-} while ($res =~ m/f.ck|ss|sch|tit|cum|ck|asm|orn|eil|tz|oe/i);
-$res;
-EOC
+	return 'Crypt::GeneratePassword::word(int($attr_minlen)||7,int($attr_maxlen)||7,$attr_lang,int($attr_signs),(defined $attr_numbers?int($attr_numbers):2))';
 }
 
 # This may not work on win32 nor with crypt() implementations without

@@ -12,7 +12,7 @@ WriteMakefile(
     'ABSTRACT'	    => 'session management for AxKit',
     'VERSION_FROM'  => 'lib/Apache/AxKit/Plugin/Session.pm', # finds $VERSION
     'PREREQ_PM'     => {
-    	AxKit => "1.51",
+    	AxKit => "1.6", # FIXME: not entirely true, but 1.6.1 is not yet released
     	Apache::RequestNotes => 0,
     	Apache::Session => 0,
     },

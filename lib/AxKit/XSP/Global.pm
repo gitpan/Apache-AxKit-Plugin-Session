@@ -13,8 +13,8 @@ sub start_document {
 		'use Time::Piece;'."\n".
 		'# Evil hack to globally prepare a session object. Actually, it is quite waterproof...'."\n".
 		'my $global;'."\n".
-		'{ my $handler = \&handler;'."\n".
-		'*handler = sub { $global = Apache->request->pnotes("GLOBAL"); goto $handler; }; }'."\n\n";
+		'{ my $handler = \&xml_generator;'."\n".
+		'*xml_generator = sub { $global = Apache->request->pnotes("GLOBAL"); goto $handler; }; }'."\n\n";
 }
 
 package AxKit::XSP::Global::Handlers;

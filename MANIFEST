@@ -6,4 +6,5 @@ Changes
 MANIFEST
 Makefile.PL
 README
+session-cleanup.sh
 test.pl
