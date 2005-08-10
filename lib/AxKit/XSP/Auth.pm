@@ -4,7 +4,7 @@ use strict;
 use Apache::AxKit::Language::XSP::SimpleTaglib;
 use Apache::AxKit::Plugin::Session;
 use Crypt::GeneratePassword;
-our $VERSION = 0.98;
+our $VERSION = 1.00;
 our $NS = 'http://www.creITve.de/2002/XSP/Auth';
 
 my @chars = ('.', '/', 0..9, 'A'..'Z', 'a'..'z');
@@ -158,7 +158,7 @@ foreach my $perm (@{$_{"access"}}) {
 EOC
 }
 
-sub login : XSP_attribOrChild(destination) XSP_childStruct(@access{$type *value})
+sub login : XSP_attribOrChild(destination,exclusive) XSP_childStruct(@access{$type *value})
 {
         my $res = << 'EOC';
 my $auth_type = $r->auth_type || "Apache::AxKit::Plugin::Session";
@@ -176,17 +176,18 @@ EOC
         return $res.<<'EOC';
 $rc = $auth_type->external_redirect($attr_destination||$r->uri) if $rc == OK && $attr_destination ne 'none';
 my $old_id = $$global{'auth_online_users'}{$$session{'auth_access_user'}};
-if ($old_id && $old_id ne $$session{'_session_id'}) {
-	my $oldsession = $auth_type->_get_session_from_store($r,$old_id);
-	eval {
-		%$oldsession = ('_session_id' => $old_id);
-		tied(%$oldsession)->delete;
-	};
+if ($attr_exclusive ne '0' && lc($attr_exclusive) ne 'no' && lc($attr_exclusive) ne 'off') {
+	if ($old_id && $old_id ne $$session{'_session_id'}) {
+		my $oldsession = $auth_type->_get_session_from_store($r,$old_id);
+		eval {
+			%$oldsession = ('_session_id' => $old_id);
+			tied(%$oldsession)->delete;
+		};
+	}
+	$$global{'auth_online_users'} ||= {};
+	$$global{'auth_online_users'}{$$session{'auth_access_user'}} = $$session{'_session_id'};
+	$$global{'auth_logins'}++;
 }
-$$global{'auth_online_users'}{$$session{'auth_access_user'}} = $$session{'_session_id'};
-$$global{'auth_logins'}++;
-untie %$session;
-untie %$global;
 throw Apache::AxKit::Exception::Retval(return_code => $rc) unless $attr_destination eq 'none';
 EOC
 }
@@ -197,7 +198,10 @@ sub logout : XSP_attribOrChild(destination)
 my $auth_type = $r->auth_type || 'Apache::AxKit::Plugin::Session';
 no strict 'refs';
 my $rc;
-delete $$global{'auth_online_users'}{$$session{'auth_access_user'}};
+if (exists $$global{'auth_online_users'}{$$session{'auth_access_user'}}) {
+	delete $$global{'auth_online_users'}{$$session{'auth_access_user'}};
+	$$global{'auth_logouts'}++;
+}
 if (defined $attr_destination) {
 	$rc = $auth_type->logout($r,$attr_destination);
 } else {
@@ -430,6 +434,10 @@ You can provide a 'destination' attribute or child tag to set the destination lo
 otherwise, the HTTP request parameter 'destination' is used. If you set 'destination'
 to "none", no redirect is performed.
 
+You can add the parameter C<<exclusive="no">> to allow a user to be logged in multiple
+times. Note that you need globals enabled to have the exclusive-login mechanism to work.
+
+
 =head3 C<<logout>>
 
 This tag invalidates the current session, thus logging the user out. If you supply a
@@ -521,11 +529,11 @@ This software has beta quality. Use with care and contact the author if any prob
 
 =head1 AUTHOR
 
-Jrg Walter <jwalt@cpan.org>
+Jörg Walter <jwalt@cpan.org>
 
 =head1 COPYRIGHT
 
-Copyright (c) 2002 Jrg Walter.
+Copyright (c) 2002 Jörg Waltr
 All rights reserved. This program is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
 

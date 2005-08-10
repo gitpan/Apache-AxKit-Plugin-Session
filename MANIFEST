@@ -6,6 +6,7 @@ Changes
 MANIFEST
 Makefile.PL
 README
+clean-sessions.pl
 session-cleanup.sh
 test.pl
 logon.xsp

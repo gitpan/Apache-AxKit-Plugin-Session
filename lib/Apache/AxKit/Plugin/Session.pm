@@ -7,7 +7,7 @@ BEGIN {
     use Apache::Table;
     use Apache::Session::File;
     use Apache::Constants qw(:common :response);
-    our $VERSION = 0.99;
+    our $VERSION = 1.00;
 }
 
 #######################################################
@@ -35,7 +35,7 @@ sub orig_save_reason ($;$) {
     if (@_ <= 1) {
         # delete error message cookie if it exists
         if ( exists $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'} ) {
-            $self->send_cookie(value=>'', name=>'Reason', expires=>'-1d');
+            $self->send_cookie(value=>'', name=>'Reason');
             delete $r->pnotes('COOKIES')->{$auth_type.'_'.$auth_name.'Reason'};
         }
     } elsif ($error_message) {
@@ -73,7 +73,7 @@ sub orig_save_params ($$) {
 
     parse_input(1);
     $uri = new URI($uri);
-    $uri->query_form(%{$r->pnotes('INPUT')});
+    $uri->query_form(%{$r->pnotes('INPUT')||{}});
     return $uri->as_string;
 }
 # ____ End of save_params ____
@@ -219,10 +219,10 @@ sub send_cookie($@) {
     # need to do this so will return cookie when url is munged.
     $settings{path} ||= '/';
     $settings{domain} ||= $r->hostname;
-    $settings{expires} ||= '+1d';
 
     my $cookie = Apache::Cookie->new($r, %settings);
     $cookie->bake;
+    $r->err_headers_out->add("Set-Cookie" => $cookie->as_string);
 
     $self->debug(3,'Sent cookie: ' . $cookie->as_string);
 }
@@ -401,8 +401,12 @@ sub fixup_redirect ($$) {
     my $uri;
 
     $uri = Apache::URI->parse($r, $r->header_out('Location') || ($r->prev?$r->prev->header_out('Location'):undef) || $r->pnotes('INPUT')->{'url'});
+    if (!$uri->hostname) {
+	$uri->hostname($r->hostname);
+	$uri->port($r->get_server_port);
+    }
     $self->debug(6,"Session: $session, uri: ".$uri->unparse);
-    my $same_host = (!$uri->hostname || (lc($uri->hostname) eq lc($r->hostname) && ($uri->port||80) == $r->server->port));
+    my $same_host = (lc($uri->hostname) eq lc($r->hostname) && ($uri->port||80) == $r->server->port);
 
     # we have not been internally redirected - show the refresh page, or redirect to
     # ourselves first, if session id is still present
@@ -591,7 +595,7 @@ sub orig_logout ($$) {
     my $auth_type = $r->auth_type || __PACKAGE__;
 
     # Send the Set-Cookie header to expire the auth cookie.
-    $self->send_cookie(value=>'none', expires=>'-1d');
+    $self->send_cookie(value=>'');
 
     $r->no_cache(1) unless $r->dir_config($auth_name.'Cache');
     $location = $r->dir_config($auth_name.'LogoutURI') if @_ < 3;
@@ -687,7 +691,7 @@ sub authenticate ($$) {
 
             $self->debug(1,'Bad session key sent.');
             # Do this even if no cookie was sent
-            $auth_type->send_cookie(value=>'none', expires=>'-1d');
+            $auth_type->send_cookie(value=>'');
             $error_message ||= 'bad_session_provided';
 
         }
@@ -778,12 +782,16 @@ sub handler {
 
     #$self->debug(5,"Plugin usage: ".$r->connection->user." / ".$r->auth_type);
     return OK if lc($r->auth_type) eq 'none';
+    return OK if $r->auth_type && $r->auth_type ne $self;
+
+    $r->auth_type($self);
+    $r->auth_name('AxKitSession') unless $r->auth_name;
 
     my $rc = $self->authenticate($r);
     return OK if $rc == DECLINED;
     return $rc if $rc != OK;
 
-    $rc = $self->authorize($r,[['valid-user']]);
+    $rc = $self->authorize($r,$r->requires||[{requirement => 'valid-user'}]);
     return OK if $rc == DECLINED;
     return $rc;
 }
@@ -975,21 +983,12 @@ sub _get_session($$;$) {
     my $globals = $mr->pnotes('GLOBAL');
     if (!$globals) {
         $globals = {};
-        eval {
-            $globals = $self->_get_session_from_store($r,$r->dir_config('SessionGlobal')||"00000000000000000000000000000000");
-        };
-        if (!tied(%$globals)) {
-            $globals = $self->_get_session_from_store($r);
-            $$globals{'_session_id'} = $r->dir_config('SessionGlobal')||"00000000000000000000000000000000";
-            my $sessobj = tied(%$globals);
-            $sessobj->release_write_lock;
-            $sessobj->{status} = Apache::Session::NEW;
-            $sessobj->save;
-        }
-        $$globals{'_creation_time'} = time() unless exists $$globals{'_creation_time'};
-        $r->pnotes('GLOBAL',$globals);
-        $session = $self->_get_session($r) if $$globals{'_session_id'} eq $$session{'_session_id'};
-        $r->register_cleanup(sub { _cleanup_session($self, $globals) });
+	if (my $tie = $r->dir_config($auth_name.'Global')) {
+		my ($tie, @tie) = split(/,/,$tie);
+		eval "require $tie" || die "Could not load ${auth_name}Global module $tie[0], did you install it? $@";
+		tie(%$globals, $tie, @tie) || die "Could tie ${auth_name}Global: $@";
+		$r->register_cleanup(sub { _cleanup_session($self, $globals) });
+	}
     }
     $r->pnotes('GLOBAL',$globals);
 
@@ -1023,8 +1022,10 @@ sub logout($$) {
     $self->debug(3,"--------- logout(".join(',',$self,@_).")");
     my $session = $r->pnotes('SESSION');
     eval {
-        %$session = ();
-        tied(%$session)->delete;
+	%$session = ('_session_id' => $$session{'_session_id'});
+        my $obj = tied(%$session);
+	untie(%$session);
+	$obj->delete;
     };
     $self->debug(5,'session delete failed: '.$@) if $@;
     return $self->orig_logout(@_);
@@ -1288,9 +1289,9 @@ sub authorize ($$;$) {
     }
 
     foreach my $req (@reqs) {
-        my ($requirement, $args) = @$req;
+        my ($requirement, $args) = split /\s/,$req->{requirement},2;
         $args = '' unless defined $args;
-        $self->debug(2,"requirement := $requirement, $args");
+        $self->debug(2,"requirements: $requirement = $args");
 
         return OK if $requirement eq 'valid-user';
 
@@ -1417,6 +1418,10 @@ Where should session files (data and locks) go?
 
     PerlSetVar AxKitSessionDir /tmp/sessions
 
+Do you want global data? ($r->pnotes('GLOBALS') and AxKit::XSP::Globals)
+
+    PerlSetVar AxKitSessionGlobal Tie::SymlinkTree,/tmp/globals
+
 How's the "guest" user called?
 
     PerlSetVar AxKitSessionGuest guest
@@ -1440,7 +1445,9 @@ Look at L<Apache::Cookie>. You'll quickly get the idea:
     PerlSetVar AxKitSessionDomain some.domain
     PerlSetVar AxKitSessionSecure 1
 
-Path can only be set to "/" if using URL sessions
+Path can only be set to "/" if using URL sessions. Do not set "AxKitSessionExpires",
+since the default value is best: it keeps the cookies until the user closes his
+browser.
 
 Disable cookies: (force URL-encoded sessions)
 
@@ -1462,21 +1469,16 @@ Prefix to session ID in URLs:
 
     PerlSetVar SessionPrefix Session-
 
-An arbitrary (nonexistant) session id for global data:
-
-    PerlSetVar AxKitSessionGlobal 00000000000000000000000000000000
-
-Note: This must be a valid session ID
 
 =head1 DESCRIPTION
 
-WARNING: This version is for AxKit 1.6.1 and above!
+WARNING: This version is for AxKit 1.7 and above!
 
 This module is an authentication and authorization handler for Apache, designed specifically
-to work with Apache::AxKit. That said, it should be generic enough to work without it as well, only
+to work with Apache::AxKit. It should be generic enough to work without it as well, only
 much of its comfort lies in a separate XSP taglib which is distributed alongside this module.
 It combines authentication and authorization in Apache::AuthCookieURL style with session management
-via one of the Apache::Session modules. It even works fine with Apache::Session::Counted. See those
+via one of the Apache::Session modules. It should even work with Apache::Session::Counted. See those
 manpages for more information, but be sure to note the differences in configuration!
 
 In addition to Apache::AuthCookieURL, you get:
@@ -1545,10 +1547,10 @@ except SessionPrefix, which must be a global setting.
 
 =over 4
 
-=item * AuthCookieURLDebug, DisableAuthCookieURL, SessionPrefix, AxKitSessionCache,
-AxKitSessionLoginScript, AxKitSessionLogoutURI, AxKitSessionNoCookie, AxKitSession(Path|Expires|Domain|Secure)
+=item * SessionPrefix, AxKitSessionCache, AxKitSessionLoginScript, AxKitSessionLogoutURI,
+AxKitSessionNoCookie, AxKitSession(Path|Expires|Domain|Secure)
 
-These settings are the same as in Apache::AuthCookieURL. Some of them are very advanced
+These settings are similar to Apache::AuthCookieURL. Some of them are very advanced
 and probably not needed at all. Some may be broken by now. Please only use the documented
 variables shown in the synopsis.
 
@@ -1559,12 +1561,8 @@ Sets the session expire timeout in minutes. The value must be a multiple of 5.
 Example: PerlSetVar AxKitSessionExpire 30
 
 Note that the session expire timeout (AxKitSessionExpire) is different from the cookie expire
-timeout (AxKitSessionExpires).  You should set the cookie expire timeout longer than the
-session expire timeout so that the system can recognize when the session times out and
-produce a reasonable message to that effect.  (If the cookie times out first, then the system
-thinks the user has no session and will create a new one.  Furthermore, the system does not
-know that it can delete the old session information so you will just be wasting space.)  The
-default cookie timeout is +1d and the default session expire timeout is 30 minutes.
+timeout (AxKitSessionExpires).  You should not set the cookie expire timeout unless you have
+a good reason to do so. 
 
 =item * AxKitSessionManager
 
@@ -1599,12 +1597,18 @@ Example: PerlSetVar AxKitSessionGuest guest
 
 =item * AxKitSessionGlobal
 
-The "session" id used for global application data. This is just
-a simple session file and might not be very long-lasting. Real persistent
-application data does not belong here. But this is the right place to put
-"how many people are online?" counters and similar things.
+Often you want to share a few values across all sessions. That's what
+$r->pnotes('GLOBALS') is for: It works just like the session hash, but it is
+shared among all sessions. In previous versions, globals were always available,
+but since many users didn't care and there were grave problems in the old
+implementation, behaviour has changed: You get a fake GLOBALS hash unless you
+specify the sotrage method to use using this setting. It takes a comma-separated
+list of "tie" parameters, starting with the name of the module to use. Do not use
+spaces, and you should use a module that works with a minimum of locking, like
+L<Tie::SymlinkTree>. Otherwise, you could get server lockups or bad performance
+(which is what you often got in previous versions as well).
 
-Example: PerlSetVar AxKitSessionGlobal 0
+Example: PerlSetVar AxKitSessionGlobal Tie::SymlinkTree,/tmp/globals
 
 =item * AxKitSessionIPCheck
 
@@ -1649,21 +1653,21 @@ adding hyperlinks to your page, change http://www.foo.com to /redirect?url=http:
 
 =head1 REQUIRED
 
-Apache::Session, AxKit 1.6.1, mod_perl 1.2x
+Apache::Session, AxKit 1.7, mod_perl 1.2x
 
 =head1 AUTHOR
 
-Jörg Walter E<lt>jwalt@cpan.orgE<gt>.
+JÃ¶rg Walter E<lt>jwalt@cpan.orgE<gt>.
 
 =head1 VERSION
 
-0.98
+1.00
 
 =head1 SEE ALSO
 
 L<Apache::AuthCookie>, L<Apache::AuthCookieURL>, L<Apache::Session>,
 L<Apache::Session::File>, L<Apache::Session::Counted>, L<AxKit::XSP::Session>,
-L<AxKit::XSP::Auth>, L<AxKit::XSP::Globals>
+L<AxKit::XSP::Auth>, L<AxKit::XSP::Globals>, L<Tie::SymlinkTree>
 
 =cut
 

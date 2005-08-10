@@ -1,5 +1,12 @@
 Revision history for Perl extension Session.pm.
 
+1.00
+	- bug fixes as usual
+	- a new globals storage mechanism
+	- non-exclusive logins
+	- some more AxKit::XSP::Auth tags
+	- allow cookies to be deleted when browser is closed
+
 0.98
 	- first release after various internal versions
 	- numerous bugfixes
